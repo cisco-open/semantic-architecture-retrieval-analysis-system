@@ -3,7 +3,6 @@
 <p align="center">
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go" alt="Go Version"></a>
   <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://github.com/cisco-open/semantic-architecture-retrieval-analysis-system/actions"><img src="https://github.com/cisco-open/semantic-architecture-retrieval-analysis-system/actions/workflows/codeql-analysis.yml/badge.svg" alt="CodeQL"></a>
   <a href="https://github.com/cisco-open/semantic-architecture-retrieval-analysis-system/releases"><img src="https://img.shields.io/github/v/release/cisco-open/semantic-architecture-retrieval-analysis-system?style=flat" alt="Release"></a>
 </p>
 
