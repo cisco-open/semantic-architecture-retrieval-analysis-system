@@ -1,0 +1,30 @@
+# Build output
+bin/
+
+# SARAS runtime data
+.saras
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Editor specific
+.devin/
+.claude/
+.cursor/
