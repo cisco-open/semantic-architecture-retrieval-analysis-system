@@ -278,11 +278,11 @@ func renderCFG(c *cfg.CFG, format string, maxPaths int, pc *ProjectContext) (str
 
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "", "mermaid":
-		return wrapMermaid(c), nil
+		return wrapMermaid(c, maxPaths), nil
 	case "text", "plain":
 		return appendContextText(c.ToText(), pc), nil
 	case "json":
-		return cfgJSONWithContext(c, pc)
+		return cfgJSONWithContext(c, maxPaths, pc)
 	case "paths":
 		return appendContextText(c.ToPathsText(), pc), nil
 	default:
@@ -305,7 +305,7 @@ func appendContextText(base string, pc *ProjectContext) string {
 // object. When pc is empty the output matches `cfg.CFG.ToJSON()`
 // byte-for-byte (modulo whitespace), so existing JSON consumers see
 // no schema drift unless --with-context is requested.
-func cfgJSONWithContext(c *cfg.CFG, pc *ProjectContext) (string, error) {
+func cfgJSONWithContext(c *cfg.CFG, maxPaths int, pc *ProjectContext) (string, error) {
 	type out struct {
 		*cfg.CFG
 		Paths   []cfg.Path      `json:"paths,omitempty"`
@@ -313,7 +313,7 @@ func cfgJSONWithContext(c *cfg.CFG, pc *ProjectContext) (string, error) {
 	}
 	o := out{CFG: c}
 	if len(c.Blocks) > 0 {
-		o.Paths = c.EnumeratePaths(0)
+		o.Paths = c.EnumeratePaths(maxPaths)
 	}
 	if !pc.Empty() {
 		o.Context = pc
@@ -327,14 +327,14 @@ func cfgJSONWithContext(c *cfg.CFG, pc *ProjectContext) (string, error) {
 
 // wrapMermaid prefixes the diagram with a fenced markdown block and a short
 // header so the output is pasteable into a README.
-func wrapMermaid(c *cfg.CFG) string {
+func wrapMermaid(c *cfg.CFG, maxPaths int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# CFG: %s\n\n", c.Function)
 	fmt.Fprintf(&b, "File: `%s:%d-%d`\n", c.File, c.StartLine, c.EndLine)
 	if c.Language != "" {
 		fmt.Fprintf(&b, "Language: %s\n", c.Language)
 	}
-	paths := c.EnumeratePaths(0)
+	paths := c.EnumeratePaths(maxPaths)
 	fmt.Fprintf(&b, "Execution paths: **%d**\n\n", len(paths))
 	b.WriteString("```mermaid\n")
 	b.WriteString(c.ToMermaid())
