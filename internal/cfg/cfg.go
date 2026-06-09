@@ -70,13 +70,20 @@ type CFG struct {
 	ExitID    int      `json:"exit_id"`
 	// Notes records any heuristic limitations (e.g. "do-while approximated as while").
 	Notes []string `json:"notes,omitempty"`
+
+	// cachedPaths / cachedMax store the result of the most recent
+	// EnumeratePaths call so that format helpers (ToText, ToPathsText,
+	// ToJSON) don't silently re-enumerate with DefaultMaxPaths and
+	// discard a higher --max-paths the caller already requested.
+	cachedPaths []Path `json:"-"`
+	cachedMax   int    `json:"-"`
 }
 
 // Path is a single execution path from entry to exit, expressed as a sequence
 // of block IDs and the labeled edges taken between them.
 type Path struct {
-	Blocks []int   `json:"blocks"`
-	Edges  []Edge  `json:"edges"`
+	Blocks []int  `json:"blocks"`
+	Edges  []Edge `json:"edges"`
 	// Decisions summarizes the branch outcomes taken along this path, e.g.
 	// ["if x > 0 = true", "switch op = case +", "return"]. Useful for naming
 	// test cases.

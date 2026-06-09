@@ -25,6 +25,13 @@ func (c *CFG) EnumeratePaths(max int) []Path {
 	if max <= 0 {
 		max = DefaultMaxPaths
 	}
+	// Reuse a previously cached result when the caller's limit is at most
+	// what was already enumerated — this prevents format methods (ToText,
+	// ToPathsText, ToJSON) from silently re-enumerating with the default
+	// cap after the CLI already honoured --max-paths.
+	if c.cachedPaths != nil && max <= c.cachedMax {
+		return c.cachedPaths
+	}
 	// Index edges by source for fast forward traversal, skipping back-edges.
 	type successor struct {
 		edge Edge
@@ -81,6 +88,8 @@ func (c *CFG) EnumeratePaths(max int) []Path {
 			"path enumeration truncated at %d paths; function may benefit from refactoring",
 			max))
 	}
+	c.cachedPaths = paths
+	c.cachedMax = max
 	return paths
 }
 
