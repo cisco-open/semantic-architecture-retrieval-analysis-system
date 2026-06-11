@@ -429,11 +429,12 @@ Embedding compatibility is validated when adding a dependency (same provider + m
 Install skill files that teach AI coding agents how to use saras:
 
 ```bash
-saras install skill --devin      # .devin/skills/<project>/SKILL.md
 saras install skill --cursor     # .cursor/skills/<project>/SKILL.md + .cursor/rules/<project>.mdc
-saras install skill --claude      # .claude/skills/<project>/SKILL.md
-saras install skill --codex       # .agents/skills/<project>/SKILL.md
-saras install skill --copilot     # .github/skills/<project>/SKILL.md + .github/copilot-instructions.md
+saras install skill --devin      # .devin/skills/<project>/SKILL.md
+saras install skill --claude     # .claude/skills/<project>/SKILL.md
+saras install skill --codex      # .agents/skills/<project>/SKILL.md
+saras install skill --copilot    # .github/skills/<project>/SKILL.md + .github/copilot-instructions.md
+saras install skill --all        # all of the above
 ```
 
 The skill name and folder are derived from the current directory name so they match the project.
@@ -456,16 +457,36 @@ Skill installation also auto-installs SARAS slash commands/workflows for editors
 
 > Codex relies on `AGENTS.md` and does not support custom commands.
 
-**Available commands (9):** `/saras-search`, `/saras-ask`, `/saras-trace`, `/saras-flow`, `/saras-map`, `/saras-understand-codebase`, `/saras-cross-repo`, `/saras-add-dependency`, `/saras-reindex`
+**Available workflows (16):**
+
+| Workflow | Trigger | Description |
+|----------|---------|-------------|
+| `/saras-search` | "search the code", "find where this is defined" | Semantic codebase search |
+| `/saras-ask` | "explain how this works", "how does X work" | RAG-powered Q&A about the codebase |
+| `/saras-trace` | "trace this function", "what calls this" | Symbol tracing (callers, callees, refs) |
+| `/saras-flow` | "show the execution flow", "what does main call" | Call-tree visualization from entry points |
+| `/saras-map` | "show me the architecture", "map the codebase" | Architecture overview and package structure |
+| `/saras-cfg` | "explain the control flow of X", "list the paths through X" | CFG generation with path enumeration |
+| `/saras-write-tests` | "write tests for X", "generate tests" | Test generation from CFG paths (single function or whole project) |
+| `/saras-refactor` | "refactor X", "rename X safely" | Safe refactoring with trace + CFG impact analysis |
+| `/saras-debug` | "debug X", "why does X fail" | Root-cause analysis via CFG path matching |
+| `/saras-document` | "document X", "add docs to X" | Generate documentation from flow + CFG analysis |
+| `/saras-impact` | "impact of changing X", "who depends on X" | Change impact report with risk rating |
+| `/saras-api-contract` | "API contract for X", "document this API" | End-to-end API endpoint documentation |
+| `/saras-understand-codebase` | "understand this codebase", "onboard me" | Full project overview using map + flow + ask |
+| `/saras-cross-repo` | "search dependencies", "find in other repos" | Cross-repo search and queries |
+| `/saras-add-dependency` | "add a dependency", "link another repo" | Add a cross-repo dependency |
+| `/saras-reindex` | "reindex", "refresh the index" | Re-index the codebase |
 
 ### Install AGENTS.md
 
-Generate per-directory `AGENTS.md` files using your configured LLM. Each file describes its package's purpose, symbols, and conventions:
+Generate `AGENTS.md` files using your configured LLM. By default only a root-level file is created; use `--deep` for per-package files:
 
 ```bash
-saras install agentsmd                     # generate AGENTS.md files
+saras install agentsmd                     # root AGENTS.md only
+saras install agentsmd --deep              # root + per-package AGENTS.md files
+saras install agentsmd --deep --min-files 3  # only for packages with 3+ files (default: 2)
 saras install agentsmd --with-claudemd     # also create CLAUDE.md with @AGENTS.md import
-saras install agentsmd --min-files 3       # only for packages with 3+ files (default: 2)
 ```
 ## Configuration
 

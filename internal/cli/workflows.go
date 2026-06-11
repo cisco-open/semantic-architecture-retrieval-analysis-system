@@ -410,7 +410,60 @@ saras dep list
 		{
 			name:        "saras-write-tests",
 			description: `Write tests for a function using saras CFG path analysis. Use when asked to "write tests for X", "generate tests for X", "create test cases for X", or "test this function".`,
-			body: `1. Generate the CFG with execution paths and surrounding code context for the target function:
+			body: `**This workflow has two modes:**
+- **With a function name** (e.g., "write tests for authenticate"): writes tests for that single function.
+- **Without a function name** (e.g., "write tests for the project", "generate tests", "test everything"): scans the entire project and writes tests for all untested functions.
+
+---
+
+## Mode A: No function name provided (whole-project test generation)
+
+1. Get the project architecture to build a function inventory:
+// turbo
+` + "```bash" + `
+saras map --format summary
+` + "```" + `
+
+2. List all functions by generating the full flow tree:
+// turbo
+` + "```bash" + `
+saras flow --depth 2
+` + "```" + `
+
+3. Search for existing test files to identify what is already covered:
+// turbo
+` + "```bash" + `
+saras search "test" --limit 50 --json
+` + "```" + `
+
+4. **STOP and confirm with the user before proceeding.** Present:
+   - The total number of functions discovered
+   - Which files/functions already have tests (and will be skipped)
+   - The ordered list of functions that will get new tests
+   - Estimated scope (number of test files to create)
+
+   Ask: "I found N functions without test coverage. I'll generate tests for each one, working through the list file-by-file. This may take a while. Proceed?"
+
+   **Do NOT continue until the user confirms.**
+
+5. For each untested function, execute **Mode B** (steps 1–8 below). Work file-by-file:
+   - Group functions by source file
+   - For each file, generate/append to the corresponding test file following the project's convention (e.g., ` + "`foo.go`" + ` → ` + "`foo_test.go`" + `, ` + "`foo.py`" + ` → ` + "`test_foo.py`" + `, ` + "`foo.ts`" + ` → ` + "`foo.test.ts`" + `)
+   - After finishing each file's tests, run the project's test command to verify they compile and pass. Detect the test runner from the project (e.g., ` + "`go test ./...`" + ` for Go, ` + "`pytest`" + ` for Python, ` + "`npm test`" + ` for JS/TS, ` + "`mvn test`" + ` for Java, ` + "`cargo test`" + ` for Rust). Check the Makefile or CI config if unsure.
+   - If tests fail, fix them before moving to the next file
+   - Report progress to the user: "Completed X/N files (Y tests written)"
+
+6. After all functions are done, present a final summary:
+   - Total test files created/modified
+   - Total test cases written
+   - Any functions that were skipped (and why)
+   - Final test suite pass/fail status
+
+---
+
+## Mode B: Specific function name provided
+
+1. Generate the CFG with execution paths and surrounding code context for the target function:
 // turbo
 ` + "```bash" + `
 saras cfg paths <functionName> --with-context
