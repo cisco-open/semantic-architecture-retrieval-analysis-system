@@ -436,8 +436,8 @@ description: Uses saras CLI to search, ask questions about, trace symbols in, ma
   "how does this feature work", "generate an architecture map", "show the execution flow",
   "what does main call", "design tests for X", "write tests for X", "generate tests for X",
   "what are the edge cases of X", "list the paths through X", "explain the control flow
-  of X", "refactor X", "debug X", "document X", "impact of changing X", or "API contract
-  for X". Requires saras to be initialized in the project.
+  of X", "refactor X", "debug X", "document X", "impact of changing X", "API contract
+  for X", or "write tests for the project". Requires saras to be initialized in the project.
 license: Apache-2.0
 compatibility: Requires saras CLI.
 metadata:
@@ -540,8 +540,8 @@ description: Uses saras CLI for codebase search, Q&A, symbol tracing, architectu
   explain how something works, trace a function, show architecture, visualize
   execution flow, design tests for a function, write tests for a function,
   refactor a function, debug a function, document a function, analyze change impact,
-  generate API contracts, list edge cases / branches, or understand the codebase.
-  Requires saras to be initialized.
+  generate API contracts, write tests for the whole project, list edge cases / branches,
+  or understand the codebase. Requires saras to be initialized.
 alwaysApply: false
 ---
 ## Searching Code
