@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/cisco-open/semantic-architecture-retrieval-analysis-system/internal/config"
 )
 
 // cachedTokenLimit stores a token limit learned from a 400 error for
@@ -69,6 +71,7 @@ func ChatCompletion(ctx context.Context, provider, baseEndpoint, model, apiKey s
 		if errors.As(err, &tle) {
 			if tle.Limit > 0 {
 				cachedTokenLimit = tle.Limit
+				config.UpdateContextWindow(tle.Limit)
 			}
 			return chatCompletionChunked(ctx, callFn, messages, maxTokens, temperature)
 		}

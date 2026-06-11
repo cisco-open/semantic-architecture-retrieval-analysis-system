@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cisco-open/semantic-architecture-retrieval-analysis-system/internal/config"
 	"github.com/cisco-open/semantic-architecture-retrieval-analysis-system/internal/search"
 )
 
@@ -377,11 +378,14 @@ func BuildContext(results []search.Result) string {
 
 // cacheTokenLimit records a token limit learned from a 400 error so that
 // subsequent calls on the same pipeline can proactively split without
-// hitting the LLM again. Only updates if the new limit is non-zero and
-// either the current value is unknown or the new value is smaller.
+// hitting the LLM again. It also persists the value to .saras/config.yaml
+// so future CLI invocations benefit automatically. Only updates if the
+// new limit is non-zero and either unknown or smaller.
 func (p *Pipeline) cacheTokenLimit(limit int) {
 	if limit > 0 && (p.contextWindow == 0 || limit < p.contextWindow) {
 		p.contextWindow = limit
+		// Best-effort persist to config file.
+		config.UpdateContextWindow(limit)
 	}
 }
 

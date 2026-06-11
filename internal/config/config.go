@@ -366,6 +366,31 @@ func Load(projectRoot string) (*Config, error) {
 	return &cfg, nil
 }
 
+// UpdateContextWindow persists a learned context_window value to the
+// project config. It loads the current config, sets the field only if it
+// is not already set (or the new value is smaller), and saves it back.
+// Errors are silently ignored — this is a best-effort optimisation.
+func UpdateContextWindow(limit int) {
+	if limit <= 0 {
+		return
+	}
+	root, err := FindProjectRoot()
+	if err != nil {
+		return
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		return
+	}
+	// Only write if the config doesn't already have a value, or the
+	// new limit is smaller (more restrictive) than what's stored.
+	if cfg.LLM.ContextWindow != nil && *cfg.LLM.ContextWindow > 0 && *cfg.LLM.ContextWindow <= limit {
+		return
+	}
+	cfg.LLM.ContextWindow = &limit
+	_ = cfg.Save(root)
+}
+
 // Exists reports whether a .saras/config.yaml exists under projectRoot.
 func Exists(projectRoot string) bool {
 	_, err := os.Stat(GetConfigPath(projectRoot))
