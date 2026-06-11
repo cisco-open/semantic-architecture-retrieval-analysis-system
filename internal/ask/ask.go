@@ -11,12 +11,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/cisco-open/semantic-architecture-retrieval-analysis-system/internal/config"
 	"github.com/cisco-open/semantic-architecture-retrieval-analysis-system/internal/search"
 )
 
@@ -45,12 +47,13 @@ type AskOptions struct {
 
 // Pipeline orchestrates search → context building → LLM chat completion.
 type Pipeline struct {
-	searcher     *search.Searcher
-	endpoint     string
-	model        string
-	apiKey       string
-	httpClient   *http.Client
-	systemPrompt string
+	searcher      *search.Searcher
+	endpoint      string
+	model         string
+	apiKey        string
+	httpClient    *http.Client
+	systemPrompt  string
+	contextWindow int // max prompt tokens; 0 = unknown (reactive detection)
 }
 
 // PipelineOption configures a Pipeline.
@@ -69,6 +72,13 @@ func WithHTTPClient(c *http.Client) PipelineOption {
 // WithSystemPrompt overrides the default system prompt.
 func WithSystemPrompt(prompt string) PipelineOption {
 	return func(p *Pipeline) { p.systemPrompt = prompt }
+}
+
+// WithContextWindow sets the known context window (max prompt tokens) for
+// the LLM. When set, the pipeline proactively splits prompts that would
+// exceed this limit, avoiding a wasted 400 round-trip.
+func WithContextWindow(n int) PipelineOption {
+	return func(p *Pipeline) { p.contextWindow = n }
 }
 
 // NewPipeline creates a new RAG pipeline.
@@ -156,9 +166,18 @@ func (p *Pipeline) Ask(ctx context.Context, opts AskOptions) (<-chan StreamChunk
 		{Role: "user", Content: userContent},
 	}
 
-	// Step 4: Stream LLM response
+	// Step 4: Stream LLM response — proactively chunk if limit is known.
+	if p.contextWindow > 0 && EstimateTokens(messages) > p.contextWindow {
+		return p.chunkedStreamChat(ctx, p.systemPrompt, userContent, opts.Query, opts)
+	}
+
 	ch, err := p.streamChat(ctx, messages, opts)
 	if err != nil {
+		var tle *TokenLimitError
+		if errors.As(err, &tle) {
+			p.cacheTokenLimit(tle.Limit)
+			return p.chunkedStreamChat(ctx, p.systemPrompt, userContent, opts.Query, opts)
+		}
 		return nil, fmt.Errorf("chat: %w", err)
 	}
 
@@ -179,13 +198,24 @@ func (p *Pipeline) AskWithContext(ctx context.Context, systemPrompt, contextStr,
 		p.model = opts.Model
 	}
 
+	fullUserContent := fmt.Sprintf("%s\n\nQuestion: %s", contextStr, question)
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: fmt.Sprintf("%s\n\nQuestion: %s", contextStr, question)},
+		{Role: "user", Content: fullUserContent},
+	}
+
+	// Proactively chunk if the token limit is known and would be exceeded.
+	if p.contextWindow > 0 && EstimateTokens(messages) > p.contextWindow {
+		return p.chunkedStreamChat(ctx, systemPrompt, contextStr, question, opts)
 	}
 
 	ch, err := p.streamChat(ctx, messages, opts)
 	if err != nil {
+		var tle *TokenLimitError
+		if errors.As(err, &tle) {
+			p.cacheTokenLimit(tle.Limit)
+			return p.chunkedStreamChat(ctx, systemPrompt, contextStr, question, opts)
+		}
 		return nil, fmt.Errorf("chat: %w", err)
 	}
 
@@ -281,6 +311,9 @@ func (p *Pipeline) streamChat(ctx context.Context, messages []Message, opts AskO
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if tle := isTokenLimitError(resp.StatusCode, body); tle != nil {
+			return nil, tle
+		}
 		return nil, fmt.Errorf("LLM returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -341,4 +374,156 @@ func (p *Pipeline) readSSEStream(ctx context.Context, body io.Reader, ch chan<- 
 // BuildContext is exported for testing.
 func BuildContext(results []search.Result) string {
 	return buildContext(results)
+}
+
+// cacheTokenLimit records a token limit learned from a 400 error so that
+// subsequent calls on the same pipeline can proactively split without
+// hitting the LLM again. It also persists the value to .saras/config.yaml
+// so future CLI invocations benefit automatically. Only updates if the
+// new limit is non-zero and either unknown or smaller.
+func (p *Pipeline) cacheTokenLimit(limit int) {
+	if limit > 0 && (p.contextWindow == 0 || limit < p.contextWindow) {
+		p.contextWindow = limit
+		// Best-effort persist to config file.
+		config.UpdateContextWindow(limit)
+	}
+}
+
+// streamChatSync performs a non-streaming chat completion using the
+// pipeline's configured endpoint. Used internally for intermediate
+// chunk calls in the sliding-window protocol.
+func (p *Pipeline) streamChatSync(ctx context.Context, messages []Message, opts AskOptions) (string, error) {
+	reqBody := chatRequest{
+		Model:       p.model,
+		Messages:    messages,
+		MaxTokens:   opts.MaxTokens,
+		Temperature: opts.Temperature,
+		Stream:      false,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := p.endpoint + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		if tle := isTokenLimitError(resp.StatusCode, respBody); tle != nil {
+			return "", tle
+		}
+		return "", fmt.Errorf("LLM returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return "", fmt.Errorf("parse response: %w (body: %.200s)", err, string(respBody))
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return "", fmt.Errorf("LLM returned no choices (body: %.500s)", string(respBody))
+	}
+
+	return chatResp.Choices[0].Message.Content, nil
+}
+
+// chunkedStreamChat implements the sliding-window chunking protocol.
+// It splits the context into chunks, calls the LLM serially on each
+// intermediate chunk (non-streaming) carrying the prior summary forward,
+// and streams only the final chunk's response back to the caller.
+func (p *Pipeline) chunkedStreamChat(ctx context.Context, systemPrompt, contextStr, question string, opts AskOptions) (<-chan StreamChunk, error) {
+	chunks := SplitContext(contextStr, 0)
+	if len(chunks) <= 1 {
+		// Cannot split further — return the original error.
+		return nil, fmt.Errorf("chat: prompt exceeds token limit and context cannot be split further")
+	}
+
+	var priorSummary string
+
+	// Process all chunks except the last one non-streamingly.
+	for i := 0; i < len(chunks)-1; i++ {
+		userMsg := buildChunkUserMessage(i, len(chunks), chunks[i], priorSummary, question)
+		messages := []Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userMsg},
+		}
+
+		partial, err := p.streamChatSync(ctx, messages, opts)
+		if err != nil {
+			var tle *TokenLimitError
+			if errors.As(err, &tle) {
+				// Even a chunk is too large — try to split it further.
+				subChunks := SplitContext(chunks[i], 1)
+				if len(subChunks) <= 1 {
+					return nil, fmt.Errorf("chat: chunk %d still exceeds token limit after sub-splitting", i+1)
+				}
+				// Replace current chunk with sub-chunks and restart the
+				// remainder. Build a new chunk list.
+				newChunks := make([]string, 0, len(subChunks)+len(chunks)-i-1)
+				newChunks = append(newChunks, subChunks...)
+				newChunks = append(newChunks, chunks[i+1:]...)
+				chunks = append(chunks[:i], newChunks...)
+				i-- // retry from the same index
+				continue
+			}
+			return nil, fmt.Errorf("chat: chunk %d/%d failed: %w", i+1, len(chunks), err)
+		}
+
+		priorSummary = partial
+	}
+
+	// Stream the final chunk.
+	finalUserMsg := buildFinalChunkUserMessage(chunks[len(chunks)-1], priorSummary, question, len(chunks))
+	finalMessages := []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: finalUserMsg},
+	}
+
+	ch, err := p.streamChat(ctx, finalMessages, opts)
+	if err != nil {
+		var tle *TokenLimitError
+		if errors.As(err, &tle) {
+			// Final chunk also too large — fall back to non-streaming
+			// and return as a single-shot channel.
+			result, syncErr := p.streamChatSync(ctx, finalMessages, opts)
+			if syncErr != nil {
+				return nil, fmt.Errorf("chat: final synthesis failed: %w", syncErr)
+			}
+			outCh := make(chan StreamChunk, 2)
+			outCh <- StreamChunk{Content: result}
+			outCh <- StreamChunk{Done: true}
+			close(outCh)
+			return outCh, nil
+		}
+		return nil, fmt.Errorf("chat: final chunk failed: %w", err)
+	}
+
+	return ch, nil
 }

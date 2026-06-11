@@ -30,6 +30,10 @@ func llmPipelineOptions(cfg *config.Config) []ask.PipelineOption {
 			opts = append(opts, ask.WithAPIKey(cfg.LLM.APIKey))
 		}
 	}
+	if cw := cfg.LLM.GetContextWindow(); cw > 0 {
+		opts = append(opts, ask.WithContextWindow(cw))
+		ask.SetTokenLimit(cw)
+	}
 	return opts
 }
 

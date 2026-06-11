@@ -325,21 +325,30 @@ func runFlowExplain(cmd *cobra.Command, args []string) error {
 }
 
 func flowExplainPlain(ch <-chan ask.StreamChunk, cmd *cobra.Command) error {
-	var buf strings.Builder
-	for chunk := range ch {
-		if chunk.Err != nil {
-			return fmt.Errorf("explain: %w", chunk.Err)
-		}
-		buf.WriteString(chunk.Content)
-	}
-
 	stylize, _ := cmd.Flags().GetBool("stylize-output")
+	out := cmd.OutOrStdout()
+
 	if stylize {
+		// Markdown rendering needs the full text, so we must buffer.
+		var buf strings.Builder
+		for chunk := range ch {
+			if chunk.Err != nil {
+				return fmt.Errorf("explain: %w", chunk.Err)
+			}
+			buf.WriteString(chunk.Content)
+		}
 		width := terminalWidth()
 		rendered := tui.RenderMarkdown(buf.String(), width)
-		fmt.Fprint(cmd.OutOrStdout(), rendered)
+		fmt.Fprint(out, rendered)
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), buf.String())
+		// Stream tokens to stdout as they arrive.
+		for chunk := range ch {
+			if chunk.Err != nil {
+				return fmt.Errorf("explain: %w", chunk.Err)
+			}
+			fmt.Fprint(out, chunk.Content)
+		}
+		fmt.Fprintln(out)
 	}
 	return nil
 }

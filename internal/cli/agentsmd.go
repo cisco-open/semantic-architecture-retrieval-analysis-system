@@ -26,7 +26,8 @@ var thinkTagRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
 func init() {
 	installCmd.AddCommand(installAgentsMDCmd)
 	installAgentsMDCmd.Flags().Bool("with-claudemd", false, "Also create CLAUDE.md that imports AGENTS.md")
-	installAgentsMDCmd.Flags().Int("min-files", 2, "Minimum files in a package to generate a per-directory AGENTS.md")
+	installAgentsMDCmd.Flags().Bool("deep", false, "Also generate per-package AGENTS.md in subdirectories")
+	installAgentsMDCmd.Flags().Int("min-files", 2, "Minimum files in a package to generate a per-directory AGENTS.md (requires --deep)")
 }
 
 var installAgentsMDCmd = &cobra.Command{
@@ -44,10 +45,14 @@ Claude Code, and many other AI coding agents.
 
 Use --with-claudemd to also create a CLAUDE.md that imports AGENTS.md.
 
+By default, only a root-level AGENTS.md is generated. Use --deep to also
+generate per-package AGENTS.md files in subdirectories.
+
 Examples:
   saras install agentsmd
-  saras install agentsmd --with-claudemd
-  saras install agentsmd --min-files 3`,
+  saras install agentsmd --deep
+  saras install agentsmd --deep --min-files 3
+  saras install agentsmd --with-claudemd`,
 	RunE: runInstallAgentsMD,
 }
 
@@ -127,6 +132,7 @@ RULES:
 
 func runInstallAgentsMD(cmd *cobra.Command, args []string) error {
 	withClaudeMD, _ := cmd.Flags().GetBool("with-claudemd")
+	deep, _ := cmd.Flags().GetBool("deep")
 	minFiles, _ := cmd.Flags().GetInt("min-files")
 
 	projectRoot, err := config.FindProjectRoot()
@@ -172,32 +178,38 @@ func runInstallAgentsMD(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Step 3: Generate per-package AGENTS.md files
+	// Step 3: Generate per-package AGENTS.md files (only with --deep)
 	created := 1
-	for _, pkg := range cmap.Packages {
-		if len(pkg.Files) < minFiles {
-			continue
-		}
-		if pkg.Path == "." {
-			continue // root package handled above
-		}
+	if deep {
+		for _, pkg := range cmap.Packages {
+			if len(pkg.Files) < minFiles {
+				continue
+			}
+			if pkg.Path == "." {
+				continue // root package handled above
+			}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Generating AGENTS.md for %s...\n", pkg.Path)
-		pkgContent, err := generatePkgAgentsMD(ctx, cfg, provider, baseEndpoint, cmap, pkg)
-		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: skipping %s: %v\n", pkg.Path, err)
-			continue
-		}
+			fmt.Fprintf(cmd.OutOrStdout(), "Generating AGENTS.md for %s...\n", pkg.Path)
+			pkgContent, err := generatePkgAgentsMD(ctx, cfg, provider, baseEndpoint, cmap, pkg)
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: skipping %s: %v\n", pkg.Path, err)
+				continue
+			}
 
-		pkgAgentsPath := filepath.Join(projectRoot, pkg.Path, "AGENTS.md")
-		if err := writeAgentsMD(cmd, pkgAgentsPath, pkgContent); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: skipping %s: %v\n", pkg.Path, err)
-			continue
+			pkgAgentsPath := filepath.Join(projectRoot, pkg.Path, "AGENTS.md")
+			if err := writeAgentsMD(cmd, pkgAgentsPath, pkgContent); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: skipping %s: %v\n", pkg.Path, err)
+				continue
+			}
+			created++
 		}
-		created++
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Created %d AGENTS.md files\n", created)
+	if created == 1 && !deep {
+		fmt.Fprintf(cmd.OutOrStdout(), "Created %d AGENTS.md file (use --deep for per-package files)\n", created)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Created %d AGENTS.md files\n", created)
+	}
 
 	// Step 4: Optionally create CLAUDE.md
 	if withClaudeMD {

@@ -24,6 +24,7 @@ func init() {
 	installSkillCmd.Flags().Bool("codex", false, "Install skill for OpenAI Codex")
 	installSkillCmd.Flags().Bool("copilot", false, "Install skill for GitHub Copilot")
 	installSkillCmd.Flags().Bool("global", false, "Install skill globally to ~/.ide/ instead of the project directory")
+	installSkillCmd.Flags().Bool("all", false, "Install skill for all supported editors")
 }
 
 var installCmd = &cobra.Command{
@@ -57,7 +58,8 @@ skill is available across all projects.
 Examples:
   saras install skill --claude
   saras install skill --cursor --global
-  saras install skill --devin --codex`,
+  saras install skill --devin --codex
+  saras install skill --all`,
 	RunE: runInstallSkill,
 }
 
@@ -76,6 +78,14 @@ func runInstallSkill(cmd *cobra.Command, args []string) error {
 	projectName := filepath.Base(cwd)
 
 	global, _ := cmd.Flags().GetBool("global")
+	all, _ := cmd.Flags().GetBool("all")
+
+	// --all sets every editor flag to true
+	if all {
+		for _, name := range []string{"cursor", "devin", "claude", "codex", "copilot"} {
+			cmd.Flags().Set(name, "true")
+		}
+	}
 
 	// Determine base directory: project-local (cwd) or global (~/)
 	baseDir := cwd
@@ -139,7 +149,7 @@ func runInstallSkill(cmd *cobra.Command, args []string) error {
 	}
 
 	if installed == 0 {
-		return fmt.Errorf("specify at least one editor: --cursor, --devin, --claude, --codex, --copilot")
+		return fmt.Errorf("specify at least one editor: --cursor, --devin, --claude, --codex, --copilot, --all")
 	}
 
 	// Auto-install workflows for editors that support them
@@ -424,9 +434,10 @@ description: Uses saras CLI to search, ask questions about, trace symbols in, ma
   "search the code", "find where this is defined", "explain how this works", "trace this
   function", "show me the architecture", "what calls this", "understand this codebase",
   "how does this feature work", "generate an architecture map", "show the execution flow",
-  "what does main call", "design tests for X", "what are the edge cases of X", "list the
-  paths through X", or "explain the control flow of X". Requires saras to be initialized
-  in the project.
+  "what does main call", "design tests for X", "write tests for X", "generate tests for X",
+  "what are the edge cases of X", "list the paths through X", "explain the control flow
+  of X", "refactor X", "debug X", "document X", "impact of changing X", or "API contract
+  for X". Requires saras to be initialized in the project.
 license: Apache-2.0
 compatibility: Requires saras CLI.
 metadata:
@@ -527,8 +538,10 @@ description: Uses saras CLI for codebase search, Q&A, symbol tracing, architectu
   mapping, execution flow visualization, and Control Flow Graphs (CFGs) with full
   execution-path enumeration for any function. Use when user asks to search code,
   explain how something works, trace a function, show architecture, visualize
-  execution flow, design tests for a function, list edge cases / branches, or
-  understand the codebase. Requires saras to be initialized.
+  execution flow, design tests for a function, write tests for a function,
+  refactor a function, debug a function, document a function, analyze change impact,
+  generate API contracts, list edge cases / branches, or understand the codebase.
+  Requires saras to be initialized.
 alwaysApply: false
 ---
 ## Searching Code

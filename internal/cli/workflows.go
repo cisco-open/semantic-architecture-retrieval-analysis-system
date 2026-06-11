@@ -408,6 +408,264 @@ saras dep list
 `,
 		},
 		{
+			name:        "saras-write-tests",
+			description: `Write tests for a function using saras CFG path analysis. Use when asked to "write tests for X", "generate tests for X", "create test cases for X", or "test this function".`,
+			body: `1. Generate the CFG with execution paths and surrounding code context for the target function:
+// turbo
+` + "```bash" + `
+saras cfg paths <functionName> --with-context
+` + "```" + `
+
+2. If the function calls project-internal helpers whose branches matter for coverage, inline their CFGs:
+// turbo
+` + "```bash" + `
+saras cfg paths <functionName> --with-context --inline-callees
+` + "```" + `
+
+3. If the function name is ambiguous, disambiguate with --file, --language, or --parent as prompted by the CLI output.
+
+4. Parse the output. Each enumerated **Path** represents a unique combination of branches through the function. The **--with-context** appendix provides:
+   - The function's source code
+   - Receiver / class type definitions
+   - Referenced type definitions
+   - Callee signatures
+
+5. Design one test case per execution path. For each path:
+   - Name the test after the path's distinguishing condition (e.g., ` + "`TestAuthenticate_InvalidToken_ReturnsError`" + `)
+   - Set up inputs that force execution down that specific path
+   - Assert the expected outcome (return value, side-effect, error)
+   - Use the context appendix to construct real types — avoid mocks unless the callee is an interface or external dependency
+
+6. If you need to understand how a callee behaves to set up the test, ask saras:
+// turbo
+` + "```bash" + `
+saras ask --no-tui "what does <calleeName> return when given <condition>?"
+` + "```" + `
+
+7. Write the test file. Follow the project's existing test conventions (test framework, file naming, directory structure). Use the paths as a checklist — every path should have a corresponding test.
+
+8. Present a summary mapping each CFG path to its test case so the user can verify coverage.
+`,
+		},
+		{
+			name:        "saras-refactor",
+			description: `Plan a safe refactoring using saras trace and CFG analysis. Use when asked to "refactor X", "rename X safely", "change the signature of X", or "move X".`,
+			body: `1. Get a full trace of the symbol to understand its usage across the codebase:
+// turbo
+` + "```bash" + `
+saras trace <symbolName> --full
+` + "```" + `
+
+2. Identify all callers that will be affected by the change:
+// turbo
+` + "```bash" + `
+saras trace <symbolName> --callers
+` + "```" + `
+
+3. For each significant caller, generate CFG paths to understand how it uses the symbol:
+// turbo
+` + "```bash" + `
+saras cfg paths <callerFunction> --with-context
+` + "```" + `
+
+4. If the symbol is a function, generate its own CFG to understand internal branching:
+// turbo
+` + "```bash" + `
+saras cfg paths <symbolName> --with-context --inline-callees
+` + "```" + `
+
+5. If you need to understand the broader architectural role of the symbol:
+// turbo
+` + "```bash" + `
+saras ask --no-tui "what is the role of <symbolName> in the architecture? what invariants does it maintain?"
+` + "```" + `
+
+6. Produce a refactoring plan with:
+   - **Impact summary**: list every file and function affected (from trace)
+   - **Change checklist**: one item per call site, describing what needs to change
+   - **Risk assessment**: which callers have complex branching around the symbol (from CFG paths)
+   - **Test impact**: which existing tests exercise the affected paths
+   - **Suggested order**: safest sequence of edits to avoid breaking intermediate states
+
+7. Execute the refactoring following the plan. After each file edit, verify correctness before moving to the next call site.
+`,
+		},
+		{
+			name:        "saras-debug",
+			description: `Diagnose and fix a bug using saras trace and CFG path analysis. Use when asked to "debug X", "why does X fail", "find the bug in X", "fix the error in X", or "X is broken".`,
+			body: `1. Generate the CFG with all execution paths for the suspect function:
+// turbo
+` + "```bash" + `
+saras cfg paths <functionName> --with-context --inline-callees
+` + "```" + `
+
+2. Examine each path. Match the user's bug description (error message, unexpected behavior, crash) against the path conditions to narrow down which path is likely triggered.
+
+3. Trace the function to understand what calls it and how inputs arrive:
+// turbo
+` + "```bash" + `
+saras trace <functionName> --callers
+` + "```" + `
+
+4. If the bug involves a callee misbehaving, trace into it:
+// turbo
+` + "```bash" + `
+saras trace <calleeName> --full
+` + "```" + `
+
+5. Ask saras for deeper understanding of specific conditions:
+// turbo
+` + "```bash" + `
+saras ask --no-tui "under what conditions does <functionName> return <error/unexpected value>?"
+` + "```" + `
+
+6. Identify the root cause by mapping the bug symptoms to a specific CFG path:
+   - Which path produces the observed behavior?
+   - What input conditions trigger that path?
+   - Is the bug in this function or in a callee?
+
+7. Propose a fix targeting the root cause (not symptoms). Include:
+   - The specific path and condition causing the bug
+   - The minimal code change to fix it
+   - A regression test case covering that path (use the CFG path as the test template)
+
+8. Implement the fix and regression test. Verify other paths are not affected.
+`,
+		},
+		{
+			name:        "saras-document",
+			description: `Generate code documentation for a function or module using saras analysis. Use when asked to "document X", "add docs to X", "write documentation for X", or "explain X for the README".`,
+			body: `1. Get the execution flow to understand the function's role in the system:
+// turbo
+` + "```bash" + `
+saras flow <functionName>
+` + "```" + `
+
+2. Generate CFG paths with context to understand all behaviors:
+// turbo
+` + "```bash" + `
+saras cfg paths <functionName> --with-context
+` + "```" + `
+
+3. If the function has significant internal helpers, inline them:
+// turbo
+` + "```bash" + `
+saras cfg paths <functionName> --with-context --inline-callees
+` + "```" + `
+
+4. Ask saras for a high-level summary:
+// turbo
+` + "```bash" + `
+saras ask --no-tui "what is the purpose and contract of <functionName>? what are its preconditions and postconditions?"
+` + "```" + `
+
+5. Write documentation covering:
+   - **Purpose**: one-line summary of what the function does
+   - **Parameters**: each parameter's role, valid values, and constraints
+   - **Return values**: what each return value means, including error cases
+   - **Error conditions**: enumerate from CFG paths — each path ending in an error return becomes a documented error case
+   - **Side effects**: any state mutations, I/O, or external calls (visible in the CFG and context)
+   - **Example usage**: if applicable, a minimal usage example
+
+6. Format the documentation following the project's existing doc style (Go doc comments, JSDoc, docstrings, etc.). Place it directly above the function definition.
+
+7. If documenting a module/package, also run:
+// turbo
+` + "```bash" + `
+saras map --format summary
+` + "```" + `
+And write a package-level doc comment covering the module's responsibility, key types, and entry points.
+`,
+		},
+		{
+			name:        "saras-impact",
+			description: `Analyze the impact of changing a symbol using saras trace and CFG analysis. Use when asked to "what breaks if I change X", "impact of changing X", "who depends on X", "is it safe to change X", or "blast radius of X".`,
+			body: `1. Get a full trace to find all references to the symbol:
+// turbo
+` + "```bash" + `
+saras trace <symbolName> --full
+` + "```" + `
+
+2. Get all direct callers:
+// turbo
+` + "```bash" + `
+saras trace <symbolName> --callers
+` + "```" + `
+
+3. Get all callees to understand downstream dependencies:
+// turbo
+` + "```bash" + `
+saras trace <symbolName> --callees
+` + "```" + `
+
+4. For each caller, check how tightly coupled it is to the symbol by examining its CFG paths:
+// turbo
+` + "```bash" + `
+saras cfg paths <callerFunction> --with-context
+` + "```" + `
+
+5. Check if the symbol is used in cross-repo dependencies:
+// turbo
+` + "```bash" + `
+saras search --with-deps "<symbolName>" --json
+` + "```" + `
+
+6. Produce an impact report with:
+   - **Direct dependents**: functions that call/reference the symbol (from trace --callers)
+   - **Transitive dependents**: functions that call the direct dependents (trace each caller's callers if needed)
+   - **Coupling assessment**: for each caller, how many CFG paths depend on the symbol's behavior
+   - **Test coverage**: which existing tests exercise the affected paths
+   - **Cross-repo impact**: any dependencies that reference this symbol
+   - **Risk rating**: low (few callers, simple usage), medium (multiple callers, some branching), high (many callers, complex branching, cross-repo)
+   - **Recommendation**: safe to change / change with caution / needs migration plan
+`,
+		},
+		{
+			name:        "saras-api-contract",
+			description: `Document an API endpoint end-to-end using saras flow, CFG, and trace analysis. Use when asked to "document this API", "what does this endpoint do", "API contract for X", "describe the request/response for X", or "endpoint documentation".`,
+			body: `1. Generate the call-flow tree from the handler function:
+// turbo
+` + "```bash" + `
+saras flow <handlerFunction>
+` + "```" + `
+
+2. Generate CFG paths with inlined callees to see every branch the request can take:
+// turbo
+` + "```bash" + `
+saras cfg paths <handlerFunction> --with-context --inline-callees
+` + "```" + `
+
+3. Trace the handler to understand its dependencies:
+// turbo
+` + "```bash" + `
+saras trace <handlerFunction> --callees
+` + "```" + `
+
+4. Ask saras about request/response shapes:
+// turbo
+` + "```bash" + `
+saras ask --no-tui "what are the request parameters and response format for <handlerFunction>?"
+` + "```" + `
+
+5. Search for route registration to find the HTTP method and path:
+// turbo
+` + "```bash" + `
+saras search "<handlerFunction>" --limit 10 --json
+` + "```" + `
+
+6. Produce an API contract document covering:
+   - **Endpoint**: HTTP method + path (from route registration)
+   - **Authentication / Authorization**: any auth middleware or checks (visible in flow tree)
+   - **Request format**: parameters, headers, body schema (from context types)
+   - **Validation**: input validation rules (from early CFG paths that return 400)
+   - **Success response**: status code + body schema (from the happy-path CFG path)
+   - **Error responses**: map each error-returning CFG path to an HTTP status code and error body
+   - **Side effects**: database writes, external API calls, queue publishes (from callees)
+   - **Rate limiting / caching**: if visible in the flow tree
+   - **Example request/response**: one happy-path example and one error example
+`,
+		},
+		{
 			name:        "saras-reindex",
 			description: `Reindex the codebase with saras. Use when asked to "reindex", "refresh the index", "update the search index", or when search results seem stale.`,
 			body: `1. Run a full reindex:

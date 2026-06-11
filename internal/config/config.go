@@ -45,10 +45,10 @@ const (
 
 	// GitHub Copilot defaults. Authentication is handled via the device
 	// OAuth flow ('saras copilot login'); no API key is stored in config.
-	DefaultCopilotEndpoint        = "https://api.githubcopilot.com"
-	DefaultCopilotEmbeddingModel  = "text-embedding-3-small"
-	DefaultCopilotEmbeddingDims   = 1536
-	DefaultCopilotLLMModel        = "gpt-4o-mini"
+	DefaultCopilotEndpoint       = "https://api.githubcopilot.com"
+	DefaultCopilotEmbeddingModel = "text-embedding-3-small"
+	DefaultCopilotEmbeddingDims  = 1536
+	DefaultCopilotLLMModel       = "gpt-4o-mini"
 )
 
 // ValidDependencyRoles lists the allowed values for Dependency.Role.
@@ -101,10 +101,22 @@ func (e *EmbedderConfig) GetDimensions() int {
 
 // LLMConfig controls the chat/completion LLM used for ask/explain and architecture map.
 type LLMConfig struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
-	Endpoint string `yaml:"endpoint,omitempty"`
-	APIKey   string `yaml:"api_key,omitempty"`
+	Provider      string `yaml:"provider"`
+	Model         string `yaml:"model"`
+	Endpoint      string `yaml:"endpoint,omitempty"`
+	APIKey        string `yaml:"api_key,omitempty"`
+	ContextWindow *int   `yaml:"context_window,omitempty"`
+}
+
+// GetContextWindow returns the configured context window (max prompt tokens)
+// or 0 if not set. When 0, the system relies on reactive detection from
+// LLM 400 errors. Once a limit is learned from an error it is cached
+// automatically, but setting this avoids the first failed request.
+func (l *LLMConfig) GetContextWindow() int {
+	if l.ContextWindow != nil {
+		return *l.ContextWindow
+	}
+	return 0
 }
 
 // StoreConfig controls the vector store backend.
@@ -352,6 +364,31 @@ func Load(projectRoot string) (*Config, error) {
 	}
 	cfg.applyDefaults()
 	return &cfg, nil
+}
+
+// UpdateContextWindow persists a learned context_window value to the
+// project config. It loads the current config, sets the field only if it
+// is not already set (or the new value is smaller), and saves it back.
+// Errors are silently ignored — this is a best-effort optimisation.
+func UpdateContextWindow(limit int) {
+	if limit <= 0 {
+		return
+	}
+	root, err := FindProjectRoot()
+	if err != nil {
+		return
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		return
+	}
+	// Only write if the config doesn't already have a value, or the
+	// new limit is smaller (more restrictive) than what's stored.
+	if cfg.LLM.ContextWindow != nil && *cfg.LLM.ContextWindow > 0 && *cfg.LLM.ContextWindow <= limit {
+		return
+	}
+	cfg.LLM.ContextWindow = &limit
+	_ = cfg.Save(root)
 }
 
 // Exists reports whether a .saras/config.yaml exists under projectRoot.

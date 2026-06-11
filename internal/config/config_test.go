@@ -356,6 +356,39 @@ func TestSaveFilePermissions(t *testing.T) {
 	}
 }
 
+func TestLLMGetContextWindow(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      LLMConfig
+		expected int
+	}{
+		{
+			name:     "nil returns 0",
+			cfg:      LLMConfig{Provider: "ollama"},
+			expected: 0,
+		},
+		{
+			name:     "explicit value",
+			cfg:      LLMConfig{Provider: "copilot", ContextWindow: intPtr(12288)},
+			expected: 12288,
+		},
+		{
+			name:     "zero value pointer",
+			cfg:      LLMConfig{Provider: "openai", ContextWindow: intPtr(0)},
+			expected: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.cfg.GetContextWindow()
+			if got != tc.expected {
+				t.Errorf("expected %d, got %d", tc.expected, got)
+			}
+		})
+	}
+}
+
 func intPtr(i int) *int {
 	return &i
 }
