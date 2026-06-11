@@ -45,10 +45,10 @@ const (
 
 	// GitHub Copilot defaults. Authentication is handled via the device
 	// OAuth flow ('saras copilot login'); no API key is stored in config.
-	DefaultCopilotEndpoint        = "https://api.githubcopilot.com"
-	DefaultCopilotEmbeddingModel  = "text-embedding-3-small"
-	DefaultCopilotEmbeddingDims   = 1536
-	DefaultCopilotLLMModel        = "gpt-4o-mini"
+	DefaultCopilotEndpoint       = "https://api.githubcopilot.com"
+	DefaultCopilotEmbeddingModel = "text-embedding-3-small"
+	DefaultCopilotEmbeddingDims  = 1536
+	DefaultCopilotLLMModel       = "gpt-4o-mini"
 )
 
 // ValidDependencyRoles lists the allowed values for Dependency.Role.
@@ -101,10 +101,22 @@ func (e *EmbedderConfig) GetDimensions() int {
 
 // LLMConfig controls the chat/completion LLM used for ask/explain and architecture map.
 type LLMConfig struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
-	Endpoint string `yaml:"endpoint,omitempty"`
-	APIKey   string `yaml:"api_key,omitempty"`
+	Provider      string `yaml:"provider"`
+	Model         string `yaml:"model"`
+	Endpoint      string `yaml:"endpoint,omitempty"`
+	APIKey        string `yaml:"api_key,omitempty"`
+	ContextWindow *int   `yaml:"context_window,omitempty"`
+}
+
+// GetContextWindow returns the configured context window (max prompt tokens)
+// or 0 if not set. When 0, the system relies on reactive detection from
+// LLM 400 errors. Once a limit is learned from an error it is cached
+// automatically, but setting this avoids the first failed request.
+func (l *LLMConfig) GetContextWindow() int {
+	if l.ContextWindow != nil {
+		return *l.ContextWindow
+	}
+	return 0
 }
 
 // StoreConfig controls the vector store backend.

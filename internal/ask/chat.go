@@ -10,12 +10,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// cachedTokenLimit stores a token limit learned from a 400 error for
+// the non-streaming ChatCompletion path. Once set, subsequent calls
+// proactively split instead of sending a doomed request.
+var cachedTokenLimit int
+
+// SetTokenLimit allows callers to pre-configure the known token limit
+// for the non-streaming ChatCompletion path (e.g. from config).
+func SetTokenLimit(n int) {
+	if n > 0 {
+		cachedTokenLimit = n
+	}
+}
 
 // ChatCompletion performs a non-streaming chat completion.
 // provider should be "ollama", "lmstudio", "openai", "copilot", etc.
@@ -35,10 +49,105 @@ func ChatCompletion(ctx context.Context, provider, baseEndpoint, model, apiKey s
 		client = httpClient[0]
 	}
 
-	if provider == "ollama" {
-		return ollamaChatCompletion(ctx, baseEndpoint, model, messages, maxTokens, temperature, client)
+	// callFn wraps the provider-specific completion so the chunking
+	// retry can re-invoke it with smaller messages.
+	callFn := func(msgs []Message) (string, error) {
+		if provider == "ollama" {
+			return ollamaChatCompletion(ctx, baseEndpoint, model, msgs, maxTokens, temperature, client)
+		}
+		return openaiChatCompletion(ctx, baseEndpoint, model, apiKey, msgs, maxTokens, temperature, client)
 	}
-	return openaiChatCompletion(ctx, baseEndpoint, model, apiKey, messages, maxTokens, temperature, client)
+
+	// Proactively chunk if the token limit is known and would be exceeded.
+	if cachedTokenLimit > 0 && EstimateTokens(messages) > cachedTokenLimit {
+		return chatCompletionChunked(ctx, callFn, messages, maxTokens, temperature)
+	}
+
+	result, err := callFn(messages)
+	if err != nil {
+		var tle *TokenLimitError
+		if errors.As(err, &tle) {
+			if tle.Limit > 0 {
+				cachedTokenLimit = tle.Limit
+			}
+			return chatCompletionChunked(ctx, callFn, messages, maxTokens, temperature)
+		}
+	}
+	return result, err
+}
+
+// chatCompletionChunked implements the sliding-window chunking protocol
+// for non-streaming ChatCompletion calls. It finds the longest user
+// message, splits its content, and processes chunks serially with the
+// prior summary carried forward.
+func chatCompletionChunked(ctx context.Context, callFn func([]Message) (string, error), messages []Message, maxTokens int, temperature float32) (string, error) {
+	// Find the longest user message — that's the one with the context data.
+	bestIdx := -1
+	bestLen := 0
+	var systemPrompt, question string
+	for i, m := range messages {
+		if m.Role == "system" && systemPrompt == "" {
+			systemPrompt = m.Content
+		}
+		if m.Role == "user" && len(m.Content) > bestLen {
+			bestIdx = i
+			bestLen = len(m.Content)
+		}
+	}
+	if bestIdx < 0 {
+		return "", fmt.Errorf("chat: prompt exceeds token limit but no user message found to split")
+	}
+
+	// Try to extract the question from the user message (after last "\n\n").
+	userContent := messages[bestIdx].Content
+	if idx := strings.LastIndex(userContent, "\n\n"); idx > 0 {
+		question = strings.TrimSpace(userContent[idx:])
+		userContent = userContent[:idx]
+	}
+
+	chunks := SplitContext(userContent, 0)
+	if len(chunks) <= 1 {
+		return "", fmt.Errorf("chat: prompt exceeds token limit and context cannot be split further")
+	}
+
+	var priorSummary string
+
+	for i, chunk := range chunks {
+		var userMsg string
+		if i == len(chunks)-1 {
+			userMsg = buildFinalChunkUserMessage(chunk, priorSummary, question, len(chunks))
+		} else {
+			userMsg = buildChunkUserMessage(i, len(chunks), chunk, priorSummary, question)
+		}
+
+		chunkMsgs := []Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userMsg},
+		}
+
+		partial, err := callFn(chunkMsgs)
+		if err != nil {
+			var tle *TokenLimitError
+			if errors.As(err, &tle) {
+				// Sub-split and expand remaining chunks.
+				subChunks := SplitContext(chunk, 1)
+				if len(subChunks) <= 1 {
+					return "", fmt.Errorf("chat: chunk %d still exceeds token limit after sub-splitting", i+1)
+				}
+				newChunks := make([]string, 0, len(subChunks)+len(chunks)-i-1)
+				newChunks = append(newChunks, subChunks...)
+				newChunks = append(newChunks, chunks[i+1:]...)
+				chunks = append(chunks[:i], newChunks...)
+				i-- // retry from the same index
+				continue
+			}
+			return "", fmt.Errorf("chat: chunk %d/%d failed: %w", i+1, len(chunks), err)
+		}
+
+		priorSummary = partial
+	}
+
+	return priorSummary, nil
 }
 
 // ollamaChatCompletion uses Ollama's native /api/chat endpoint where think:false works.
@@ -104,6 +213,9 @@ func ollamaChatCompletion(ctx context.Context, baseEndpoint, model string, messa
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if tle := isTokenLimitError(resp.StatusCode, respBody); tle != nil {
+			return "", tle
+		}
 		return "", fmt.Errorf("Ollama returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -167,6 +279,9 @@ func openaiChatCompletion(ctx context.Context, baseEndpoint, model, apiKey strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if tle := isTokenLimitError(resp.StatusCode, respBody); tle != nil {
+			return "", tle
+		}
 		return "", fmt.Errorf("LLM returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
