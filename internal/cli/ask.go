@@ -201,21 +201,30 @@ func runAskPlain(cmd *cobra.Command, pipeline *ask.Pipeline, opts ask.AskOptions
 		return fmt.Errorf("ask: %w", err)
 	}
 
-	var buf strings.Builder
-	for chunk := range ch {
-		if chunk.Err != nil {
-			return fmt.Errorf("ask: %w", chunk.Err)
-		}
-		buf.WriteString(chunk.Content)
-	}
-
 	stylize, _ := cmd.Flags().GetBool("stylize-output")
+	out := cmd.OutOrStdout()
+
 	if stylize {
+		// Markdown rendering needs the full text, so we must buffer.
+		var buf strings.Builder
+		for chunk := range ch {
+			if chunk.Err != nil {
+				return fmt.Errorf("ask: %w", chunk.Err)
+			}
+			buf.WriteString(chunk.Content)
+		}
 		width := terminalWidth()
 		rendered := tui.RenderMarkdown(buf.String(), width)
-		fmt.Fprint(cmd.OutOrStdout(), rendered)
+		fmt.Fprint(out, rendered)
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), buf.String())
+		// Stream tokens to stdout as they arrive.
+		for chunk := range ch {
+			if chunk.Err != nil {
+				return fmt.Errorf("ask: %w", chunk.Err)
+			}
+			fmt.Fprint(out, chunk.Content)
+		}
+		fmt.Fprintln(out)
 	}
 	return nil
 }
