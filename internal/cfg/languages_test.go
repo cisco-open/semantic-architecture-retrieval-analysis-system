@@ -348,6 +348,7 @@ func TestStyleForLanguage(t *testing.T) {
 		{"python2", StyleIndent},
 		{"ruby", StyleEnd},
 		{"shell", StyleShell},
+		{"sql", StyleSQL},
 		{"json", StyleUnsupported},
 		{"yaml", StyleUnsupported},
 		{"markdown", StyleUnsupported},
@@ -390,13 +391,200 @@ func TestStyleStrings(t *testing.T) {
 	}
 	pairs := map[Style]string{
 		StyleBrace: "brace", StyleIndent: "indent",
-		StyleEnd: "end", StyleShell: "shell",
+		StyleEnd: "end", StyleShell: "shell", StyleSQL: "sql",
 		StyleUnsupported: "unsupported",
 	}
 	for s, want := range pairs {
 		if got := s.String(); got != want {
 			t.Errorf("%v.String() = %q, want %q", s, got, want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SQL (procedural / PL-pgSQL style)
+// ---------------------------------------------------------------------------
+
+func TestSQL_IfElsifElse(t *testing.T) {
+	src := `CREATE OR REPLACE FUNCTION sign_of(x INT)
+RETURNS TEXT AS $$
+BEGIN
+    IF x > 0 THEN
+        RETURN 'pos';
+    ELSIF x < 0 THEN
+        RETURN 'neg';
+    ELSE
+        RETURN 'zero';
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+`
+	dir := writeTempFile(t, "sign.sql", src)
+	c, err := BuildFromFunction(context.Background(), dir, "sign_of", nil)
+	if err != nil {
+		t.Fatalf("BuildFromFunction: %v", err)
+	}
+	if c.Language != "sql" {
+		t.Errorf("Language = %q, want sql", c.Language)
+	}
+	paths := c.EnumeratePaths(0)
+	if len(paths) != 3 {
+		t.Errorf("paths = %d, want 3 (pos/neg/zero)\n%s", len(paths), c.ToText())
+	}
+	var hasTrue, hasFalse bool
+	for _, e := range c.Edges {
+		blk := c.blockByID(e.From)
+		if blk != nil && blk.Kind == KindBranch {
+			if e.Label == "true" {
+				hasTrue = true
+			}
+			if e.Label == "false" {
+				hasFalse = true
+			}
+		}
+	}
+	if !hasTrue || !hasFalse {
+		t.Errorf("branch labels missing: true=%v false=%v\n%s", hasTrue, hasFalse, c.ToText())
+	}
+}
+
+func TestSQL_WhileLoop(t *testing.T) {
+	src := `CREATE FUNCTION countdown(n INT)
+RETURNS INT AS $$
+BEGIN
+    WHILE n > 0 LOOP
+        n := n - 1;
+    END LOOP;
+    RETURN n;
+END;
+$$ LANGUAGE plpgsql;
+`
+	dir := writeTempFile(t, "countdown.sql", src)
+	c, err := BuildFromFunction(context.Background(), dir, "countdown", nil)
+	if err != nil {
+		t.Fatalf("BuildFromFunction: %v", err)
+	}
+	var hasLoop, hasBack bool
+	for _, b := range c.Blocks {
+		if b.Kind == KindLoopHead {
+			hasLoop = true
+		}
+	}
+	for _, e := range c.Edges {
+		if e.Back {
+			hasBack = true
+		}
+	}
+	if !hasLoop {
+		t.Errorf("expected a loop-head block\n%s", c.ToText())
+	}
+	if !hasBack {
+		t.Errorf("expected a back-edge\n%s", c.ToText())
+	}
+}
+
+func TestSQL_CaseWhen(t *testing.T) {
+	src := `CREATE FUNCTION label(x INT)
+RETURNS TEXT AS $$
+BEGIN
+    CASE x
+        WHEN 1 THEN
+            RETURN 'one';
+        WHEN 2 THEN
+            RETURN 'two';
+        ELSE
+            RETURN 'other';
+    END CASE;
+END;
+$$ LANGUAGE plpgsql;
+`
+	dir := writeTempFile(t, "label.sql", src)
+	c, err := BuildFromFunction(context.Background(), dir, "label", nil)
+	if err != nil {
+		t.Fatalf("BuildFromFunction: %v", err)
+	}
+	var hasSwitch bool
+	for _, b := range c.Blocks {
+		if b.Kind == KindSwitch {
+			hasSwitch = true
+		}
+	}
+	if !hasSwitch {
+		t.Errorf("expected a switch block\n%s", c.ToText())
+	}
+	if paths := c.EnumeratePaths(0); len(paths) < 3 {
+		t.Errorf("paths = %d, want >=3\n%s", len(paths), c.ToText())
+	}
+}
+
+// TestSQL_ExitWhen covers the PL/pgSQL `LOOP ... EXIT WHEN cond ...END LOOP`
+// idiom: a bare infinite loop whose conditional EXIT becomes a branch whose
+// true arm breaks out of the loop.
+func TestSQL_ExitWhen(t *testing.T) {
+	src := `CREATE FUNCTION sum_to(n INT)
+RETURNS INT AS $$
+DECLARE
+    i INT := 0;
+    total INT := 0;
+BEGIN
+    LOOP
+        EXIT WHEN i >= n;
+        total := total + i;
+        i := i + 1;
+    END LOOP;
+    RETURN total;
+END;
+$$ LANGUAGE plpgsql;
+`
+	dir := writeTempFile(t, "sum_to.sql", src)
+	c, err := BuildFromFunction(context.Background(), dir, "sum_to", nil)
+	if err != nil {
+		t.Fatalf("BuildFromFunction: %v", err)
+	}
+	var hasLoop, hasBreak, hasBranch bool
+	for _, b := range c.Blocks {
+		switch b.Kind {
+		case KindLoopHead:
+			hasLoop = true
+		case KindBreak:
+			hasBreak = true
+		case KindBranch:
+			hasBranch = true
+		}
+	}
+	if !hasLoop || !hasBreak || !hasBranch {
+		t.Errorf("expected loop+break+branch, got loop=%v break=%v branch=%v\n%s",
+			hasLoop, hasBreak, hasBranch, c.ToText())
+	}
+}
+
+// TestSQL_TSQLProcedure covers a T-SQL style procedure: `AS BEGIN ... END`
+// with no dollar-quoting and uppercase keywords.
+func TestSQL_TSQLProcedure(t *testing.T) {
+	src := `CREATE PROCEDURE log_it @msg VARCHAR(100)
+AS
+BEGIN
+    INSERT INTO audit(message) VALUES (@msg);
+    RETURN;
+END;
+`
+	dir := writeTempFile(t, "log_it.sql", src)
+	c, err := BuildFromFunction(context.Background(), dir, "log_it", nil)
+	if err != nil {
+		t.Fatalf("BuildFromFunction: %v", err)
+	}
+	if c.Language != "sql" {
+		t.Errorf("Language = %q, want sql", c.Language)
+	}
+	// The CFG must build and contain a return that reaches the exit.
+	var hasReturn bool
+	for _, b := range c.Blocks {
+		if b.Kind == KindReturn {
+			hasReturn = true
+		}
+	}
+	if !hasReturn {
+		t.Errorf("expected a return block\n%s", c.ToText())
 	}
 }
 

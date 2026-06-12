@@ -143,6 +143,9 @@ func parseFunctionForStyle(style Style, body string, startLine int) ([]*stmt, []
 	case StyleShell:
 		stmts, notes := parseShellFunctionBody(body, startLine)
 		return stmts, notes, nil
+	case StyleSQL:
+		stmts, notes := parseSQLFunctionBody(body, startLine)
+		return stmts, notes, nil
 	default:
 		return nil, nil, fmt.Errorf("no parser for style %s", style)
 	}

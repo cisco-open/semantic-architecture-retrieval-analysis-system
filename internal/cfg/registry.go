@@ -37,6 +37,11 @@ const (
 	// StyleShell covers POSIX-shell-like languages with mixed block
 	// terminators (`fi` / `done` / `esac`) — sh, bash, zsh, ksh.
 	StyleShell
+	// StyleSQL covers procedural SQL (PL/pgSQL, T-SQL, Oracle PL/SQL,
+	// MySQL stored programs) where blocks open with `BEGIN` / `IF ... THEN`
+	// / `LOOP` / `CASE` and close with the matching two-word terminators
+	// `END` / `END IF` / `END LOOP` / `END CASE` / `END REPEAT`.
+	StyleSQL
 )
 
 func (s Style) String() string {
@@ -49,6 +54,8 @@ func (s Style) String() string {
 		return "end"
 	case StyleShell:
 		return "shell"
+	case StyleSQL:
+		return "sql"
 	default:
 		return "unsupported"
 	}
@@ -90,8 +97,9 @@ var languageStyle = map[string]Style{
 	// --- POSIX-shell-like ---
 	"shell": StyleShell,
 
-	// --- SQL — stored procedures use BEGIN/END blocks ---
-	"sql": StyleBrace,
+	// --- SQL — procedural stored programs use BEGIN/END, IF/END IF,
+	// LOOP/END LOOP, CASE/END CASE; handled by the dedicated SQL front-end ---
+	"sql": StyleSQL,
 
 	// --- COBOL — paragraph/section based, no brace/indent style ---
 	"cobol": StyleUnsupported,
