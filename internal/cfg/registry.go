@@ -90,6 +90,17 @@ var languageStyle = map[string]Style{
 	// --- POSIX-shell-like ---
 	"shell": StyleShell,
 
+	// --- SQL — stored procedures use BEGIN/END blocks ---
+	"sql": StyleBrace,
+
+	// --- COBOL — paragraph/section based, no brace/indent style ---
+	"cobol": StyleUnsupported,
+
+	// --- Declarative / schema / config — no function-level control flow ---
+	"cypher":   StyleUnsupported,
+	"hcl":      StyleUnsupported,
+	"protobuf": StyleUnsupported,
+
 	// --- Markup / config / data — no function-level control flow ---
 	"makefile":   StyleUnsupported,
 	"dockerfile": StyleUnsupported,
