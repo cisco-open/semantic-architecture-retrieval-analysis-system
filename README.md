@@ -21,7 +21,7 @@ AI coding agents today hit context window limits fast. A single "explain how aut
 
 ## Features
 
-- **Multi-language** symbol-aware indexing for Go, Python, JavaScript, TypeScript, Java, C, C++, C#, Rust, Kotlin, Ruby, PHP, Zig, CSS, HTML, XML (pluggable for more)
+- **Multi-language** symbol-aware indexing for Go, Python, JavaScript, TypeScript, Java, C, C++, C#, Rust, Kotlin, Swift, Ruby, PHP, Zig, SQL, Cypher, HCL/Terraform, Protobuf, Groovy/Jenkinsfile, COBOL, CSS, HTML, XML (pluggable for more)
 - **Semantic search** to find code by meaning, not just keywords
 - **Ask** natural language questions about your codebase using a RAG pipeline
 - **Trace** symbol definitions, references, callers, and callees across all supported languages
@@ -626,6 +626,13 @@ Built-in symbol-aware parsing for:
 | Dockerfile | `Dockerfile`, `Containerfile`, `.dockerfile` | FROM stages, ARG, ENV, EXPOSE, ENTRYPOINT, CMD, WORKDIR, VOLUME, HEALTHCHECK |
 | Zig | `.zig` | functions, structs, enums, unions, constants |
 | Python 2 | `.py2`, `.pyw` | functions, classes, methods, constants |
+| SQL | `.sql`, `.ddl`, `.dml`, `.pgsql`, `.plsql` | functions, procedures, triggers, tables, views, types, schemas, indexes, sequences, variables |
+| Cypher | `.cypher`, `.cql` | node labels, relationship types, constraints, indexes, procedure calls, parameters |
+| Swift | `.swift` | functions, methods, classes, structs, enums, protocols, actors, extensions, typealias |
+| HCL / Terraform | `.tf`, `.hcl`, `.tfvars` | resources, data sources, variables, outputs, modules, providers, locals |
+| Protobuf | `.proto` | messages, enums, services, RPCs, oneofs, packages, imports, options |
+| Groovy | `.groovy`, `.gvy`, `.gy`, `.gsh`, `Jenkinsfile` | classes, interfaces, traits, enums, functions, methods, pipeline stages, environment vars, parameters |
+| COBOL | `.cob`, `.cbl`, `.cpy`, `.cobol` | programs, sections, paragraphs, data items (01/77), conditions (88), file descriptions, copybooks |
 
 Unsupported file types still get line-based chunking for search and embedding.
 

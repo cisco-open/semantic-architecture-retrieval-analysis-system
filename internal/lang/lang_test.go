@@ -96,6 +96,25 @@ func TestParserForFile(t *testing.T) {
 		{"Dockerfile", "dockerfile"},
 		{"Containerfile", "dockerfile"},
 		{"app.dockerfile", "dockerfile"},
+		{"schema.sql", "sql"},
+		{"migration.ddl", "sql"},
+		{"insert.dml", "sql"},
+		{"proc.pgsql", "sql"},
+		{"pkg.plsql", "sql"},
+		{"graph.cypher", "cypher"},
+		{"queries.cql", "cypher"},
+		{"App.swift", "swift"},
+		{"main.tf", "hcl"},
+		{"vars.tfvars", "hcl"},
+		{"config.hcl", "hcl"},
+		{"api.proto", "protobuf"},
+		{"Build.groovy", "groovy"},
+		{"script.gvy", "groovy"},
+		{"Jenkinsfile", "groovy"},
+		{"PAYROLL.cob", "cobol"},
+		{"process.cbl", "cobol"},
+		{"copybook.cpy", "cobol"},
+		{"main.cobol", "cobol"},
 		{"data.csv", ""},
 	}
 	for _, tt := range tests {
@@ -2092,6 +2111,963 @@ func TestDockerfileParserExtensions(t *testing.T) {
 		if p == nil || p.Name() != "dockerfile" {
 			t.Errorf("expected dockerfile parser for %s", ext)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SQL parser tests
+// ---------------------------------------------------------------------------
+
+func TestSQLParser(t *testing.T) {
+	src := `
+-- Schema definition
+CREATE SCHEMA IF NOT EXISTS analytics;
+
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) UNIQUE
+);
+
+CREATE OR REPLACE VIEW active_users AS
+SELECT * FROM users WHERE active = true;
+
+CREATE TYPE status_enum AS ENUM ('active', 'inactive', 'pending');
+
+CREATE UNIQUE INDEX idx_users_email ON users(email);
+
+CREATE SEQUENCE order_seq START 1000;
+
+ALTER TABLE users ADD COLUMN created_at TIMESTAMP;
+
+CREATE OR REPLACE FUNCTION get_user(p_id INTEGER)
+RETURNS TABLE(id INTEGER, name VARCHAR) AS $$
+BEGIN
+    RETURN QUERY SELECT u.id, u.name FROM users u WHERE u.id = p_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE PROCEDURE update_user(IN p_id INTEGER, IN p_name VARCHAR)
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE users SET name = p_name WHERE id = p_id;
+END;
+$$;
+
+CREATE TRIGGER audit_trigger
+AFTER INSERT ON users
+FOR EACH ROW
+BEGIN
+    INSERT INTO audit_log(user_id) VALUES(NEW.id);
+END;
+
+DECLARE @batch_size INT;
+`
+	p := &SQLParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "analytics", KindModule)
+	assertHasSymbol(t, syms, "users", KindType)
+	assertHasSymbol(t, syms, "active_users", KindType)
+	assertHasSymbol(t, syms, "status_enum", KindType)
+	assertHasSymbol(t, syms, "idx_users_email", KindConstant)
+	assertHasSymbol(t, syms, "order_seq", KindConstant)
+	assertHasSymbol(t, syms, "get_user", KindFunction)
+	assertHasSymbol(t, syms, "update_user", KindFunction)
+	assertHasSymbol(t, syms, "audit_trigger", KindFunction)
+	assertHasSymbol(t, syms, "batch_size", KindVariable)
+}
+
+func TestSQLParserMultiLineFunction(t *testing.T) {
+	src := `CREATE FUNCTION calculate_total(order_id INT)
+RETURNS DECIMAL AS $$
+DECLARE
+    total DECIMAL;
+BEGIN
+    SELECT SUM(price * quantity) INTO total
+    FROM order_items
+    WHERE order_id = calculate_total.order_id;
+
+    IF total IS NULL THEN
+        total := 0;
+    END IF;
+
+    RETURN total;
+END;
+$$ LANGUAGE plpgsql;`
+
+	p := &SQLParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "calculate_total", KindFunction)
+
+	// Verify endLine covers the whole function
+	for _, s := range syms {
+		if s.Name == "calculate_total" {
+			if s.StartLine != 1 {
+				t.Errorf("expected start line 1, got %d", s.StartLine)
+			}
+			if s.EndLine < 10 {
+				t.Errorf("expected end line > 10, got %d", s.EndLine)
+			}
+			break
+		}
+	}
+}
+
+func TestSQLParserTSQL(t *testing.T) {
+	src := `CREATE PROCEDURE dbo.GetOrders
+    @CustomerId INT,
+    @Status VARCHAR(20)
+AS
+BEGIN
+    SELECT * FROM Orders
+    WHERE customer_id = @CustomerId AND status = @Status;
+END;`
+
+	p := &SQLParser{}
+	syms := p.ExtractSymbols(src)
+	assertHasSymbol(t, syms, "GetOrders", KindFunction)
+}
+
+func TestSQLParserIsTestFile(t *testing.T) {
+	p := &SQLParser{}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"migrations/001_create_users.sql", false},
+		{"test/fixtures.sql", true},
+		{"tests/seed.sql", true},
+		{"db/schema_test.sql", true},
+		{"testdata/sample.sql", true},
+		{"fixtures/data.sql", true},
+		{"seed/init.sql", true},
+	}
+	for _, tt := range tests {
+		if got := p.IsTestFile(tt.path); got != tt.want {
+			t.Errorf("IsTestFile(%s) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestSQLParserExtensions(t *testing.T) {
+	p := &SQLParser{}
+	exts := p.Extensions()
+	want := map[string]bool{".sql": true, ".ddl": true, ".dml": true, ".pgsql": true, ".plsql": true}
+	for _, ext := range exts {
+		if !want[ext] {
+			t.Errorf("unexpected extension %s", ext)
+		}
+	}
+	if len(exts) != len(want) {
+		t.Errorf("expected %d extensions, got %d", len(want), len(exts))
+	}
+}
+
+func TestSQLParserAlterTable(t *testing.T) {
+	src := `ALTER TABLE orders
+ADD COLUMN total DECIMAL(10,2);`
+
+	p := &SQLParser{}
+	syms := p.ExtractSymbols(src)
+	assertHasSymbol(t, syms, "orders", KindType)
+
+	for _, s := range syms {
+		if s.Name == "orders" {
+			if s.Parent != "ALTER" {
+				t.Errorf("expected Parent=ALTER, got %q", s.Parent)
+			}
+			break
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cypher parser tests
+// ---------------------------------------------------------------------------
+
+func TestCypherParser(t *testing.T) {
+	src := `
+// Graph schema setup
+CREATE INDEX user_name_idx FOR (n:User) ON (n.name);
+CREATE CONSTRAINT unique_email FOR (n:User) REQUIRE n.email IS UNIQUE;
+
+// Create nodes
+CREATE (u:Person {name: 'Alice', age: 30})
+MERGE (c:Company {name: 'Acme'})
+
+// Create relationships
+MATCH (p:Person), (c:Company)
+WHERE p.name = 'Alice' AND c.name = 'Acme'
+CREATE (p)-[:WORKS_AT {since: 2020}]->(c)
+
+// Query with procedure call
+CALL db.index.fulltext.queryNodes('userIndex', 'Alice')
+YIELD node
+RETURN node.name
+
+:param userId => 42
+`
+	p := &CypherParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "user_name_idx", KindConstant)
+	assertHasSymbol(t, syms, "unique_email", KindConstant)
+	assertHasSymbol(t, syms, "Person", KindType)
+	assertHasSymbol(t, syms, "Company", KindType)
+	assertHasSymbol(t, syms, "WORKS_AT", KindProperty)
+	assertHasSymbol(t, syms, "db.index.fulltext.queryNodes", KindFunction)
+	assertHasSymbol(t, syms, "userId", KindVariable)
+}
+
+func TestCypherParserDeduplication(t *testing.T) {
+	src := `
+CREATE (a:Person {name: 'Alice'})
+CREATE (b:Person {name: 'Bob'})
+MATCH (a:Person)-[:KNOWS]->(b:Person)
+CREATE (a)-[:KNOWS]->(c:Company)
+`
+	p := &CypherParser{}
+	syms := p.ExtractSymbols(src)
+
+	// Person should appear only once
+	personCount := 0
+	knowsCount := 0
+	for _, s := range syms {
+		if s.Name == "Person" {
+			personCount++
+		}
+		if s.Name == "KNOWS" {
+			knowsCount++
+		}
+	}
+	if personCount != 1 {
+		t.Errorf("expected 1 Person symbol, got %d", personCount)
+	}
+	if knowsCount != 1 {
+		t.Errorf("expected 1 KNOWS symbol, got %d", knowsCount)
+	}
+}
+
+func TestCypherParserIsTestFile(t *testing.T) {
+	p := &CypherParser{}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"graph/schema.cypher", false},
+		{"queries/search.cql", false},
+		{"test/fixtures.cypher", true},
+		{"tests/graph_test.cql", true},
+		{"testdata/sample.cypher", true},
+		{"fixtures/data.cql", true},
+	}
+	for _, tt := range tests {
+		if got := p.IsTestFile(tt.path); got != tt.want {
+			t.Errorf("IsTestFile(%s) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestCypherParserExtensions(t *testing.T) {
+	p := &CypherParser{}
+	exts := p.Extensions()
+	want := map[string]bool{".cypher": true, ".cql": true}
+	for _, ext := range exts {
+		if !want[ext] {
+			t.Errorf("unexpected extension %s", ext)
+		}
+	}
+	if len(exts) != len(want) {
+		t.Errorf("expected %d extensions, got %d", len(want), len(exts))
+	}
+}
+
+func TestCypherParserMultipleRelationships(t *testing.T) {
+	src := `
+MATCH (a:Person)-[:KNOWS]->(b:Person)-[:LIVES_IN]->(c:City)
+CREATE (a)-[:VISITED]->(c)
+`
+	p := &CypherParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "KNOWS", KindProperty)
+	assertHasSymbol(t, syms, "LIVES_IN", KindProperty)
+	assertHasSymbol(t, syms, "VISITED", KindProperty)
+}
+
+// ---------------------------------------------------------------------------
+// Swift parser tests
+// ---------------------------------------------------------------------------
+
+func TestSwiftParser(t *testing.T) {
+	src := `
+import Foundation
+import UIKit
+
+let appVersion = "1.0"
+var debugMode = false
+
+protocol DataProvider {
+    func fetchData() -> [String]
+}
+
+actor NetworkManager {
+    func request(url: String) async throws -> Data {
+        return Data()
+    }
+}
+
+enum AppError: Error {
+    case networkError
+    case parseError
+}
+
+struct Config {
+    let apiKey: String
+    let timeout: Int
+}
+
+class UserService {
+    func authenticate(token: String) -> Bool {
+        return true
+    }
+
+    required init(config: Config) {
+        // setup
+    }
+}
+
+extension UserService: DataProvider {
+    func fetchData() -> [String] {
+        return []
+    }
+}
+
+typealias Handler = (Result<Data, Error>) -> Void
+`
+	p := &SwiftParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "Foundation", KindImport)
+	assertHasSymbol(t, syms, "UIKit", KindImport)
+	assertHasSymbol(t, syms, "appVersion", KindConstant)
+	assertHasSymbol(t, syms, "debugMode", KindVariable)
+	assertHasSymbol(t, syms, "DataProvider", KindInterface)
+	assertHasSymbol(t, syms, "NetworkManager", KindClass)
+	assertHasSymbol(t, syms, "AppError", KindEnum)
+	assertHasSymbol(t, syms, "Config", KindStruct)
+	assertHasSymbol(t, syms, "UserService", KindClass)
+	assertHasSymbol(t, syms, "Handler", KindType)
+
+	// Check methods have parents
+	for _, s := range syms {
+		if s.Name == "authenticate" {
+			if s.Kind != KindMethod || s.Parent != "UserService" {
+				t.Errorf("authenticate: want Method/UserService, got %s/%s", s.Kind, s.Parent)
+			}
+		}
+		if s.Name == "request" {
+			if s.Kind != KindMethod || s.Parent != "NetworkManager" {
+				t.Errorf("request: want Method/NetworkManager, got %s/%s", s.Kind, s.Parent)
+			}
+		}
+	}
+}
+
+func TestSwiftParserIsTestFile(t *testing.T) {
+	p := &SwiftParser{}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"Sources/App.swift", false},
+		{"Tests/AppTests.swift", true},
+		{"UserServiceTest.swift", true},
+		{"test/Helpers.swift", true},
+		{"Sources/Models/User.swift", false},
+	}
+	for _, tt := range tests {
+		if got := p.IsTestFile(tt.path); got != tt.want {
+			t.Errorf("IsTestFile(%s) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestSwiftParserExtensions(t *testing.T) {
+	p := &SwiftParser{}
+	if len(p.Extensions()) != 1 || p.Extensions()[0] != ".swift" {
+		t.Errorf("expected [.swift], got %v", p.Extensions())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HCL / Terraform parser tests
+// ---------------------------------------------------------------------------
+
+func TestHCLParser(t *testing.T) {
+	src := `
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-west-2"
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "env" {
+  type = string
+}
+
+locals {
+  name_prefix = "myapp"
+  tags = {
+    Environment = var.env
+  }
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = var.instance_type
+  tags          = local.tags
+}
+
+data "aws_ami" "latest" {
+  most_recent = true
+  owners      = ["amazon"]
+}
+
+module "vpc" {
+  source = "./modules/vpc"
+  cidr   = "10.0.0.0/16"
+}
+
+output "instance_id" {
+  value = aws_instance.web.id
+}
+`
+	p := &HCLParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "terraform", KindModule)
+	assertHasSymbol(t, syms, "aws", KindModule)               // provider
+	assertHasSymbol(t, syms, "instance_type", KindVariable)   // variable
+	assertHasSymbol(t, syms, "env", KindVariable)             // variable
+	assertHasSymbol(t, syms, "name_prefix", KindConstant)     // locals
+	assertHasSymbol(t, syms, "tags", KindConstant)            // locals
+	assertHasSymbol(t, syms, "aws_instance.web", KindType)    // resource
+	assertHasSymbol(t, syms, "data.aws_ami.latest", KindType) // data source
+	assertHasSymbol(t, syms, "vpc", KindModule)               // module
+
+	// Output with parent
+	for _, s := range syms {
+		if s.Name == "instance_id" {
+			if s.Parent != "output" {
+				t.Errorf("output instance_id: want Parent=output, got %q", s.Parent)
+			}
+			break
+		}
+	}
+}
+
+func TestHCLParserIsTestFile(t *testing.T) {
+	p := &HCLParser{}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"main.tf", false},
+		{"modules/vpc/main.tf", false},
+		{"test/integration.tf", true},
+		{"tests/e2e.tf", true},
+		{"testdata/fixtures.tf", true},
+		{"infra_test.tf", true},
+	}
+	for _, tt := range tests {
+		if got := p.IsTestFile(tt.path); got != tt.want {
+			t.Errorf("IsTestFile(%s) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestHCLParserExtensions(t *testing.T) {
+	p := &HCLParser{}
+	exts := p.Extensions()
+	want := map[string]bool{".tf": true, ".hcl": true, ".tfvars": true}
+	for _, ext := range exts {
+		if !want[ext] {
+			t.Errorf("unexpected extension %s", ext)
+		}
+	}
+	if len(exts) != len(want) {
+		t.Errorf("expected %d extensions, got %d", len(want), len(exts))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Protobuf parser tests
+// ---------------------------------------------------------------------------
+
+func TestProtobufParser(t *testing.T) {
+	src := `
+syntax = "proto3";
+
+package myapi.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/myorg/myapi/v1;myapiv1";
+
+message User {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  Address address = 4;
+
+  enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_ADMIN = 1;
+    ROLE_USER = 2;
+  }
+
+  oneof contact {
+    string phone = 5;
+    string slack = 6;
+  }
+}
+
+message Address {
+  string street = 1;
+  string city = 2;
+}
+
+message CreateUserRequest {
+  User user = 1;
+}
+
+message CreateUserResponse {
+  User user = 1;
+}
+
+service UserService {
+  rpc CreateUser (CreateUserRequest) returns (CreateUserResponse);
+  rpc GetUser (GetUserRequest) returns (User);
+  rpc ListUsers (ListUsersRequest) returns (stream User);
+}
+`
+	p := &ProtobufParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "proto3", KindConstant)                        // syntax
+	assertHasSymbol(t, syms, "myapi.v1", KindPackage)                       // package
+	assertHasSymbol(t, syms, "google/protobuf/timestamp.proto", KindImport) // import
+	assertHasSymbol(t, syms, "google/protobuf/empty.proto", KindImport)     // import
+	assertHasSymbol(t, syms, "User", KindStruct)                            // message
+	assertHasSymbol(t, syms, "Address", KindStruct)                         // message
+	assertHasSymbol(t, syms, "CreateUserRequest", KindStruct)               // message
+	assertHasSymbol(t, syms, "CreateUserResponse", KindStruct)              // message
+	assertHasSymbol(t, syms, "Role", KindEnum)                              // nested enum
+	assertHasSymbol(t, syms, "contact", KindProperty)                       // oneof
+	assertHasSymbol(t, syms, "UserService", KindInterface)                  // service
+
+	// Check RPC methods have service parent
+	for _, s := range syms {
+		if s.Name == "CreateUser" {
+			if s.Kind != KindMethod || s.Parent != "UserService" {
+				t.Errorf("CreateUser: want Method/UserService, got %s/%s", s.Kind, s.Parent)
+			}
+		}
+		if s.Name == "GetUser" {
+			if s.Kind != KindMethod || s.Parent != "UserService" {
+				t.Errorf("GetUser: want Method/UserService, got %s/%s", s.Kind, s.Parent)
+			}
+		}
+	}
+
+	// Nested enum should have parent
+	for _, s := range syms {
+		if s.Name == "Role" {
+			if s.Parent != "User" {
+				t.Errorf("Role enum: want Parent=User, got %q", s.Parent)
+			}
+			break
+		}
+	}
+
+	// oneof should have parent
+	for _, s := range syms {
+		if s.Name == "contact" {
+			if s.Parent != "User" {
+				t.Errorf("contact oneof: want Parent=User, got %q", s.Parent)
+			}
+			break
+		}
+	}
+}
+
+func TestProtobufParserIsTestFile(t *testing.T) {
+	p := &ProtobufParser{}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"api/v1/user.proto", false},
+		{"proto/service.proto", false},
+		{"test/fixtures.proto", true},
+		{"testdata/sample.proto", true},
+		{"api/user_test.proto", true},
+	}
+	for _, tt := range tests {
+		if got := p.IsTestFile(tt.path); got != tt.want {
+			t.Errorf("IsTestFile(%s) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestProtobufParserExtensions(t *testing.T) {
+	p := &ProtobufParser{}
+	if len(p.Extensions()) != 1 || p.Extensions()[0] != ".proto" {
+		t.Errorf("expected [.proto], got %v", p.Extensions())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Groovy / Jenkinsfile parser tests
+// ---------------------------------------------------------------------------
+
+func TestGroovyParser(t *testing.T) {
+	src := `
+package com.example
+
+import groovy.json.JsonSlurper
+import static java.lang.Math.PI
+
+class UserService {
+    def authenticate(String token) {
+        return true
+    }
+
+    String getName() {
+        return "test"
+    }
+}
+
+interface Repository {
+    def findById(int id)
+}
+
+trait Auditable {
+    def audit() { println "audited" }
+}
+
+enum Status {
+    ACTIVE, INACTIVE
+}
+
+def helper(Map config) {
+    return config
+}
+`
+	p := &GroovyParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "com.example", KindPackage)
+	assertHasSymbol(t, syms, "groovy.json.JsonSlurper", KindImport)
+	assertHasSymbol(t, syms, "java.lang.Math.PI", KindImport)
+	assertHasSymbol(t, syms, "UserService", KindClass)
+	assertHasSymbol(t, syms, "Repository", KindInterface)
+	assertHasSymbol(t, syms, "Auditable", KindTrait)
+	assertHasSymbol(t, syms, "Status", KindEnum)
+	assertHasSymbol(t, syms, "helper", KindFunction)
+
+	// Methods have parent
+	for _, s := range syms {
+		if s.Name == "authenticate" {
+			if s.Kind != KindMethod || s.Parent != "UserService" {
+				t.Errorf("authenticate: want Method/UserService, got %s/%s", s.Kind, s.Parent)
+			}
+		}
+		if s.Name == "getName" {
+			if s.Kind != KindMethod || s.Parent != "UserService" {
+				t.Errorf("getName: want Method/UserService, got %s/%s", s.Kind, s.Parent)
+			}
+		}
+	}
+}
+
+func TestGroovyParserJenkinsfile(t *testing.T) {
+	src := `
+@Library('shared-lib') _
+
+pipeline {
+    agent any
+
+    environment {
+        DEPLOY_ENV = 'staging'
+        API_KEY = credentials('api-key')
+    }
+
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
+        booleanParam(name: 'DEPLOY', defaultValue: false, description: 'Deploy?')
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                sh 'make build'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh 'make test'
+            }
+        }
+
+        stage('Deploy') {
+            when {
+                expression { params.DEPLOY == true }
+            }
+            steps {
+                sh 'make deploy'
+            }
+        }
+    }
+}
+`
+	p := &GroovyParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "shared-lib", KindImport)
+	assertHasSymbol(t, syms, "pipeline", KindModule)
+	assertHasSymbol(t, syms, "DEPLOY_ENV", KindVariable)
+	assertHasSymbol(t, syms, "API_KEY", KindVariable)
+	assertHasSymbol(t, syms, "Build", KindFunction)
+	assertHasSymbol(t, syms, "Test", KindFunction)
+	assertHasSymbol(t, syms, "Deploy", KindFunction)
+	assertHasSymbol(t, syms, "BRANCH", KindVariable)
+	assertHasSymbol(t, syms, "DEPLOY", KindVariable)
+
+	// Env vars have parent
+	for _, s := range syms {
+		if s.Name == "DEPLOY_ENV" {
+			if s.Parent != "environment" {
+				t.Errorf("DEPLOY_ENV: want Parent=environment, got %q", s.Parent)
+			}
+		}
+		if s.Name == "BRANCH" {
+			if s.Parent != "parameters" {
+				t.Errorf("BRANCH: want Parent=parameters, got %q", s.Parent)
+			}
+		}
+	}
+}
+
+func TestGroovyParserScriptedPipeline(t *testing.T) {
+	src := `
+node('linux') {
+    stage('Checkout') {
+        checkout scm
+    }
+    stage('Build') {
+        sh 'make'
+    }
+}
+`
+	p := &GroovyParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "node:linux", KindType)
+	assertHasSymbol(t, syms, "Checkout", KindFunction)
+	assertHasSymbol(t, syms, "Build", KindFunction)
+}
+
+func TestGroovyParserIsTestFile(t *testing.T) {
+	p := &GroovyParser{}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"src/main/groovy/App.groovy", false},
+		{"Jenkinsfile", false},
+		{"src/test/groovy/AppTest.groovy", true},
+		{"test/BuildSpec.groovy", true},
+		{"tests/integration.groovy", true},
+	}
+	for _, tt := range tests {
+		if got := p.IsTestFile(tt.path); got != tt.want {
+			t.Errorf("IsTestFile(%s) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestGroovyParserExtensions(t *testing.T) {
+	p := &GroovyParser{}
+	exts := p.Extensions()
+	want := map[string]bool{".groovy": true, ".gvy": true, ".gy": true, ".gsh": true}
+	for _, ext := range exts {
+		if !want[ext] {
+			t.Errorf("unexpected extension %s", ext)
+		}
+	}
+	if len(exts) != len(want) {
+		t.Errorf("expected %d extensions, got %d", len(want), len(exts))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// COBOL parser tests
+// ---------------------------------------------------------------------------
+
+func TestCOBOLParserFreeFormat(t *testing.T) {
+	src := `IDENTIFICATION DIVISION.
+PROGRAM-ID. PAYROLL.
+
+ENVIRONMENT DIVISION.
+
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-EMPLOYEE-REC.
+   05 WS-EMP-ID      PIC 9(5).
+   05 WS-EMP-NAME    PIC X(30).
+77 WS-COUNTER        PIC 9(4) VALUE 0.
+88 IS-VALID           VALUE 'Y'.
+
+FILE SECTION.
+FD EMPLOYEE-FILE.
+01 EMPLOYEE-RECORD   PIC X(80).
+
+PROCEDURE DIVISION.
+MAIN-LOGIC SECTION.
+MAIN-PARA.
+    PERFORM INIT-PARA.
+    PERFORM PROCESS-PARA.
+    PERFORM CLEANUP-PARA.
+    STOP RUN.
+
+INIT-PARA.
+    OPEN INPUT EMPLOYEE-FILE.
+
+PROCESS-PARA.
+    READ EMPLOYEE-FILE
+    DISPLAY WS-EMP-NAME.
+
+CLEANUP-PARA.
+    CLOSE EMPLOYEE-FILE.
+
+COPY DATEUTIL.
+`
+	p := &COBOLParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "PAYROLL", KindModule)
+	assertHasSymbol(t, syms, "WS-EMPLOYEE-REC", KindVariable)
+	assertHasSymbol(t, syms, "WS-COUNTER", KindVariable)
+	assertHasSymbol(t, syms, "IS-VALID", KindConstant)
+	assertHasSymbol(t, syms, "EMPLOYEE-FILE", KindType)
+	assertHasSymbol(t, syms, "MAIN-LOGIC", KindFunction)
+	assertHasSymbol(t, syms, "MAIN-PARA", KindFunction)
+	assertHasSymbol(t, syms, "INIT-PARA", KindFunction)
+	assertHasSymbol(t, syms, "PROCESS-PARA", KindFunction)
+	assertHasSymbol(t, syms, "CLEANUP-PARA", KindFunction)
+	assertHasSymbol(t, syms, "DATEUTIL", KindImport)
+
+	// Paragraphs in MAIN-LOGIC section should have parent
+	for _, s := range syms {
+		if s.Name == "MAIN-PARA" {
+			if s.Parent != "MAIN-LOGIC" {
+				t.Errorf("MAIN-PARA: want Parent=MAIN-LOGIC, got %q", s.Parent)
+			}
+		}
+	}
+}
+
+func TestCOBOLParserFixedFormat(t *testing.T) {
+	src := `000100 IDENTIFICATION DIVISION.
+000200 PROGRAM-ID. ACCOUNTS.
+000300
+000400 DATA DIVISION.
+000500 WORKING-STORAGE SECTION.
+000600 01 WS-TOTAL      PIC 9(7)V99.
+000700 77 WS-FLAG        PIC X VALUE 'N'.
+000800 88 IS-DONE         VALUE 'Y'.
+000900
+001000 PROCEDURE DIVISION.
+001100 START-PROCESSING SECTION.
+001200 BEGIN-PARA.
+001300     DISPLAY "STARTING".
+001400     STOP RUN.
+`
+	p := &COBOLParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "ACCOUNTS", KindModule)
+	assertHasSymbol(t, syms, "WS-TOTAL", KindVariable)
+	assertHasSymbol(t, syms, "WS-FLAG", KindVariable)
+	assertHasSymbol(t, syms, "IS-DONE", KindConstant)
+	assertHasSymbol(t, syms, "START-PROCESSING", KindFunction)
+	assertHasSymbol(t, syms, "BEGIN-PARA", KindFunction)
+}
+
+func TestCOBOLParserCopybook(t *testing.T) {
+	src := `01 CUSTOMER-RECORD.
+   05 CUST-ID       PIC 9(8).
+   05 CUST-NAME     PIC X(40).
+   05 CUST-BALANCE  PIC 9(9)V99.
+88 CUST-VIP          VALUE 'V'.
+`
+	p := &COBOLParser{}
+	syms := p.ExtractSymbols(src)
+
+	assertHasSymbol(t, syms, "CUSTOMER-RECORD", KindVariable)
+	assertHasSymbol(t, syms, "CUST-VIP", KindConstant)
+}
+
+func TestCOBOLParserIsTestFile(t *testing.T) {
+	p := &COBOLParser{}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"src/PAYROLL.cob", false},
+		{"copybooks/DATEUTIL.cpy", false},
+		{"test/PAYTEST.cob", true},
+		{"tests/ACCTEST.cbl", true},
+		{"testdata/sample.cob", true},
+		{"src/PAY-test.cob", true},
+	}
+	for _, tt := range tests {
+		if got := p.IsTestFile(tt.path); got != tt.want {
+			t.Errorf("IsTestFile(%s) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestCOBOLParserExtensions(t *testing.T) {
+	p := &COBOLParser{}
+	exts := p.Extensions()
+	want := map[string]bool{".cob": true, ".cbl": true, ".cpy": true, ".cobol": true}
+	for _, ext := range exts {
+		if !want[ext] {
+			t.Errorf("unexpected extension %s", ext)
+		}
+	}
+	if len(exts) != len(want) {
+		t.Errorf("expected %d extensions, got %d", len(want), len(exts))
 	}
 }
 
