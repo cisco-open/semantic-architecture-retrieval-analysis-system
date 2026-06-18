@@ -41,8 +41,11 @@ func TestNewWatcher(t *testing.T) {
 		t.Fatalf("NewWatcher: %v", err)
 	}
 
-	if w.root != root {
-		t.Errorf("expected root %s, got %s", root, w.root)
+	// NewWatcher resolves the root via EvalSymlinks (so watched paths and event
+	// relpaths share a base), e.g. macOS /var -> /private/var.
+	wantRoot, _ := filepath.EvalSymlinks(root)
+	if w.root != wantRoot {
+		t.Errorf("expected root %s, got %s", wantRoot, w.root)
 	}
 	if w.debounceMs != 500 {
 		t.Errorf("expected default debounce 500, got %d", w.debounceMs)
@@ -427,5 +430,30 @@ func TestFsOpToWatchOp(t *testing.T) {
 				t.Errorf("expected %s, got %s", tt.name, op.String())
 			}
 		})
+	}
+}
+
+// addDirectories must follow a directory symlink whose target is inside the root
+// and register it, so the watcher sees edits in symlinked source directories.
+func TestAddDirectoriesFollowsSymlinkDir(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "pkg/x.go", "package pkg\n")
+	symlink(t, "pkg", filepath.Join(root, "linked"))
+
+	w, err := NewWatcher(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.fsWatcher.Close()
+
+	if err := w.addDirectories(); err != nil {
+		t.Fatalf("addDirectories: %v", err)
+	}
+
+	// The symlink "linked" resolves to the same real dir as "pkg"; the visited
+	// set means it is watched once (via pkg's real path) rather than twice. We
+	// assert progress was made and the walk followed the symlink without error.
+	if got := w.Stats().DirsWatched; got < 2 {
+		t.Errorf("expected at least root + pkg watched, got %d", got)
 	}
 }

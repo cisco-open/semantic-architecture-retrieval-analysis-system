@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -109,6 +110,14 @@ func NewWatcher(root string, ignoreList []string, opts ...WatcherOption) (*Watch
 		return nil, err
 	}
 
+	// Resolve the root once so watched paths (fsnotify reports real paths) and the
+	// relative paths derived in handleFSEvent share the same base. Without this, a
+	// symlinked root (e.g. macOS /var -> private/var, or a virtualenv checkout)
+	// makes filepath.Rel produce "../"-prefixed paths and every event is dropped.
+	if resolved, rerr := filepath.EvalSymlinks(root); rerr == nil {
+		root = resolved
+	}
+
 	w := &Watcher{
 		root:       root,
 		ignoreList: ignoreList,
@@ -158,28 +167,31 @@ func (w *Watcher) Stats() WatchStats {
 }
 
 func (w *Watcher) addDirectories() error {
-	return filepath.Walk(w.root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !info.IsDir() {
+	return walkFollow(w.root, func(logicalPath, relPath string, info fs.FileInfo, isDir bool) error {
+		if !isDir {
 			return nil
 		}
 
-		name := info.Name()
+		name := filepath.Base(logicalPath)
 
-		// Skip hidden directories
-		if strings.HasPrefix(name, ".") && name != "." {
-			return filepath.SkipDir
+		// Skip hidden directories (but not the root itself).
+		if relPath != "." && strings.HasPrefix(name, ".") {
+			return fs.SkipDir
 		}
 
-		relPath, _ := filepath.Rel(w.root, path)
 		if relPath != "." && w.ignorer.IsIgnored(relPath, true) {
-			return filepath.SkipDir
+			return fs.SkipDir
 		}
 
-		if err := w.fsWatcher.Add(path); err != nil {
-			log.Printf("watcher: failed to watch %s: %v", path, err)
+		// fsnotify must watch the real inode to receive child events; watching a
+		// symlink path yields none. Resolve so followed symlink directories are
+		// watched at their target.
+		realPath, err := filepath.EvalSymlinks(logicalPath)
+		if err != nil {
+			realPath = logicalPath
+		}
+		if err := w.fsWatcher.Add(realPath); err != nil {
+			log.Printf("watcher: failed to watch %s: %v", realPath, err)
 			return nil
 		}
 

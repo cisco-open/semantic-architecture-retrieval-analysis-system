@@ -306,3 +306,156 @@ func TestParseIgnoreLine(t *testing.T) {
 		})
 	}
 }
+
+// symlink creates a symbolic link, skipping the test if the platform/permissions
+// do not support symlinks (e.g. Windows without privilege).
+func symlink(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+}
+
+// scanPathSet returns the set of relative paths produced by ScanAll for root.
+func scanPathSet(t *testing.T, root string, ignore []string) map[string]bool {
+	t.Helper()
+	files, err := NewScanner(root, ignore).ScanAll()
+	if err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+	set := make(map[string]bool, len(files))
+	for _, f := range files {
+		set[f.Path] = true
+	}
+	return set
+}
+
+// A relative directory symlink (e.g. a venv's "semver -> ../") must be followed
+// when its real target is not otherwise reachable. When BOTH the real directory
+// and a symlink to it are present, the real path wins and content is indexed once
+// (deduplicated), so identical files are not embedded twice.
+func TestScanAllFollowsRelativeDirSymlink(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "pkg/inner.go", "package pkg\n")
+	symlink(t, "pkg", filepath.Join(root, "linked")) // relative target, like "semver -> ../"
+
+	paths := scanPathSet(t, root, nil)
+
+	if !paths[filepath.Join("pkg", "inner.go")] {
+		t.Error("should index the real pkg/inner.go")
+	}
+	// linked -> pkg resolves to the already-walked real directory, so its content
+	// is deduplicated rather than indexed a second time under linked/.
+	if paths[filepath.Join("linked", "inner.go")] {
+		t.Error("should NOT re-index the same content via the duplicate symlink path")
+	}
+}
+
+// When a symlinked directory's real target is NOT otherwise indexed in the tree,
+// the symlink must be followed so its content is indexed (the core bug:
+// filepath.Walk skips it entirely). This mirrors a virtualenv/monorepo whose
+// source is exposed only through a symlink.
+func TestScanAllFollowsSymlinkToExternalContent(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "app.go", "package main\n")
+
+	// Real content lives under a path the scanner ignores (node_modules), exposed
+	// to the project only via an in-root symlink. The symlink is the sole indexable
+	// route to it, so following it must surface src/code.go.
+	writeFile(t, root, "node_modules/realcode/code.go", "package code\n")
+	symlink(t, filepath.Join("node_modules", "realcode"), filepath.Join(root, "src"))
+
+	paths := scanPathSet(t, root, []string{"node_modules"})
+
+	if !paths["app.go"] {
+		t.Error("should index app.go")
+	}
+	if paths[filepath.Join("node_modules", "realcode", "code.go")] {
+		t.Error("node_modules content must stay ignored on its real path")
+	}
+	if !paths[filepath.Join("src", "code.go")] {
+		t.Error("should follow the in-root symlink and index src/code.go")
+	}
+}
+
+// A directory symlink whose target is OUTSIDE the project root must be skipped,
+// so we never pull system/Homebrew/site-packages trees into the index.
+func TestScanAllSkipsEscapingDirSymlink(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "app.go", "package main\n")
+
+	outside := t.TempDir()
+	writeFile(t, outside, "leak.go", "package leak\n")
+	symlink(t, outside, filepath.Join(root, "ext"))
+
+	paths := scanPathSet(t, root, nil)
+
+	if !paths["app.go"] {
+		t.Error("should index in-root app.go")
+	}
+	if paths[filepath.Join("ext", "leak.go")] {
+		t.Error("must NOT follow a symlink that escapes the project root")
+	}
+}
+
+// A symlink pointing back at an ancestor (a cycle) must terminate and must not
+// re-index content through the loop.
+func TestScanAllHandlesSymlinkCycle(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a/keep.go", "package a\n")
+	symlink(t, root, filepath.Join(root, "a", "loop")) // a/loop -> root (cycle)
+
+	// Must return rather than recurse forever.
+	paths := scanPathSet(t, root, nil)
+
+	if !paths[filepath.Join("a", "keep.go")] {
+		t.Error("should index a/keep.go")
+	}
+	if paths[filepath.Join("a", "loop", "a", "keep.go")] {
+		t.Error("must not re-index content through a symlink cycle")
+	}
+}
+
+// When the project root itself is a symlink, the tree must still be scanned.
+// (Old filepath.Walk returned 0 files here — the exact reported symptom.)
+func TestScanAllSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	writeFile(t, real, "main.go", "package main\n")
+
+	link := filepath.Join(t.TempDir(), "rootlink")
+	symlink(t, real, link)
+
+	paths := scanPathSet(t, link, nil)
+
+	if !paths["main.go"] {
+		t.Error("should index main.go when the root is a symlink")
+	}
+}
+
+// A symlink to a regular file must be indexed, reporting the TARGET's size
+// (not the link's), since the indexer reads target content.
+func TestScanAllSymlinkToFile(t *testing.T) {
+	root := t.TempDir()
+	const body = "package main\n"
+	writeFile(t, root, "orig.go", body)
+	symlink(t, "orig.go", filepath.Join(root, "alias.go"))
+
+	files, err := NewScanner(root, nil).ScanAll()
+	if err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+
+	var alias *FileMeta
+	for i := range files {
+		if files[i].Path == "alias.go" {
+			alias = &files[i]
+			break
+		}
+	}
+	if alias == nil {
+		t.Fatal("should index the symlinked file alias.go")
+	}
+	if alias.Size != int64(len(body)) {
+		t.Errorf("alias.go size = %d, want target size %d", alias.Size, len(body))
+	}
+}

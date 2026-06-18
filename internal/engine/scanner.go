@@ -7,7 +7,7 @@
 package engine
 
 import (
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"time"
@@ -38,37 +38,36 @@ func NewScanner(root string, ignoreList []string) *Scanner {
 }
 
 // ScanAll returns metadata for every indexable file under the project root.
+//
+// Directory symlinks whose target stays within the project root are followed (see
+// walkFollow), so source directories that are symlinks — common in Python
+// virtualenvs and monorepos — are indexed rather than silently skipped.
 func (s *Scanner) ScanAll() ([]FileMeta, error) {
 	var files []FileMeta
-	err := filepath.Walk(s.root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
-		}
-
-		relPath, _ := filepath.Rel(s.root, path)
+	err := walkFollow(s.root, func(logicalPath, relPath string, info fs.FileInfo, isDir bool) error {
 		if relPath == "." {
 			return nil
 		}
 
-		name := info.Name()
+		name := filepath.Base(logicalPath)
 
 		// Skip hidden files/dirs (except .gitignore / .sarasignore)
 		if strings.HasPrefix(name, ".") && name != ".gitignore" && name != ".sarasignore" {
-			if info.IsDir() {
-				return filepath.SkipDir
+			if isDir {
+				return fs.SkipDir
 			}
 			return nil
 		}
 
 		// Check ignore list + gitignore / sarasignore patterns
-		if s.ignorer.IsIgnored(relPath, info.IsDir()) {
-			if info.IsDir() {
-				return filepath.SkipDir
+		if s.ignorer.IsIgnored(relPath, isDir) {
+			if isDir {
+				return fs.SkipDir
 			}
 			return nil
 		}
 
-		if info.IsDir() {
+		if isDir {
 			return nil
 		}
 
@@ -84,7 +83,7 @@ func (s *Scanner) ScanAll() ([]FileMeta, error) {
 
 		files = append(files, FileMeta{
 			Path:    relPath,
-			AbsPath: path,
+			AbsPath: logicalPath,
 			ModTime: info.ModTime(),
 			Size:    info.Size(),
 		})
